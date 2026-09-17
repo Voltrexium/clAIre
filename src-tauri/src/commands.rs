@@ -1,0 +1,601 @@
+use std::time::Duration;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow};
+
+use crate::capture;
+use crate::hotkey;
+use crate::llm;
+use crate::search;
+use crate::settings::{CaptureMode, Settings};
+use crate::state::{AppState, CapturePayload};
+use crate::storage;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskResult {
+    pub answer: String,
+    pub used_search: bool,
+    pub used_vision: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfo {
+    pub app_data_dir: String,
+    pub settings_path: String,
+    pub context_dir: String,
+    pub history_count: usize,
+}
+
+fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
+    app.get_webview_window("overlay")
+}
+
+pub fn apply_window_mode(app: &AppHandle, expanded: bool, force: bool) {
+    let state = app.state::<AppState>();
+    if !force {
+        if let Ok(current) = state.expanded.lock() {
+            if *current == expanded {
+                return;
+            }
+        }
+    }
+    if let Ok(mut current) = state.expanded.lock() {
+        *current = expanded;
+    }
+    let Some(window) = overlay(app) else {
+        return;
+    };
+    let _ = window.set_resizable(false);
+    if expanded {
+        let _ = window.set_skip_taskbar(false);
+        let _ = window.set_always_on_top(false);
+    } else {
+        let _ = window.set_skip_taskbar(true);
+        let _ = window.set_always_on_top(true);
+    }
+}
+
+#[tauri::command]
+pub fn fit_overlay(app: AppHandle, _width: f64, height: f64) -> Result<(), String> {
+    let Some(window) = overlay(&app) else {
+        return Ok(());
+    };
+    let width = 880.0;
+    let height = height.clamp(140.0, 800.0);
+    let size = LogicalSize::new(width, height);
+    // Pin min=max=size so GTK/WebKit actually shrinks frameless windows.
+    let _ = window.set_min_size(Some(size));
+    let _ = window.set_max_size(Some(size));
+    let _ = window.set_size(size);
+    Ok(())
+}
+
+fn lock_settings(state: &AppState) -> Result<Settings, String> {
+    state
+        .settings
+        .lock()
+        .map(|guard| guard.clone())
+        .map_err(|err| err.to_string())
+}
+
+fn force_current_window(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if let Ok(mut settings) = state.settings.lock() {
+        settings.capture_mode = CaptureMode::Current;
+        settings.capture_display_ids.clear();
+    };
+}
+
+fn reset_session(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    if let Ok(mut session) = state.session.lock() {
+        session.messages.clear();
+        session.summary.clear();
+        session.total_messages = 0;
+        session.epoch = session.epoch.saturating_add(1);
+        let _ = storage::save_session(app, &session);
+    };
+}
+
+fn reset_chat(app: &AppHandle) {
+    reset_session(app);
+    let _ = app.emit("claire://chat-cleared", true);
+}
+
+fn dismiss(app: &AppHandle) {
+    reset_chat(app);
+    apply_window_mode(app, false, true);
+    if let Some(window) = overlay(app) {
+        let _ = window.unminimize();
+        let _ = window.set_min_size(None::<LogicalSize<f64>>);
+        let _ = window.set_max_size(None::<LogicalSize<f64>>);
+        let _ = window.hide();
+    }
+}
+
+fn overlay_is_open(window: &WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+}
+
+pub fn summon(app: &AppHandle) {
+    if let Some(window) = overlay(app) {
+        if overlay_is_open(&window) {
+            dismiss(app);
+            return;
+        }
+    }
+    force_current_window(app);
+    recapture_then_show(app);
+}
+
+fn recapture_then_show(app: &AppHandle) {
+    let max_width = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|settings| settings.downscale_max_width)
+        .unwrap_or(1280);
+    let target = capture::current_target();
+    pin_current(app, &target);
+    let _ = app.emit("claire://summoned", target.label.clone());
+    if let Some(window) = overlay(app) {
+        let _ = window.hide();
+    }
+    let capture_app = app.clone();
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        recapture_pinned(&capture_app, target, max_width)
+    });
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+        match result {
+            Ok(payload) => {
+                let _ = app.emit("claire://capture", payload);
+            }
+            Err(err) => {
+                let _ = app.emit("claire://error", err);
+            }
+        }
+        apply_window_mode(&app, false, true);
+        raise_overlay(&app);
+    });
+}
+
+fn pin_current(app: &AppHandle, target: &capture::CurrentTarget) {
+    if let Ok(mut pin) = app.state::<AppState>().pinned_current.lock() {
+        *pin = Some((target.id, target.label.clone()));
+    }
+}
+
+fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
+    if let Ok(pin) = app.state::<AppState>().pinned_current.lock() {
+        if let Some((id, label)) = pin.clone() {
+            return capture::CurrentTarget { id, label };
+        }
+    }
+    let target = capture::current_target();
+    pin_current(app, &target);
+    target
+}
+
+fn with_overlay_hidden<T>(app: &AppHandle, work: impl FnOnce() -> T) -> T {
+    let window = overlay(app);
+    let was_open = window.as_ref().map(overlay_is_open).unwrap_or(false);
+    if was_open {
+        if let Some(window) = &window {
+            let _ = window.hide();
+        }
+        std::thread::sleep(Duration::from_millis(80));
+    }
+    let result = work();
+    if was_open {
+        raise_overlay(app);
+    }
+    result
+}
+
+fn recapture_pinned(
+    app: &AppHandle,
+    target: capture::CurrentTarget,
+    max_width: u32,
+) -> Result<CapturePayload, String> {
+    with_overlay_hidden(app, || {
+        let (mut capture, label) = match target.id {
+            Some(id) => match capture::capture_ids(&[id], max_width) {
+                Ok(capture) => (capture, target.label.clone()),
+                Err(_) => {
+                    let fresh = capture::current_target();
+                    pin_current(app, &fresh);
+                    let capture = match fresh.id {
+                        Some(id) => capture::capture_ids(&[id], max_width)?,
+                        None => capture::capture_primary(max_width)?,
+                    };
+                    (capture, fresh.label)
+                }
+            },
+            None => (capture::capture_primary(max_width)?, target.label.clone()),
+        };
+        if !label.is_empty() {
+            capture.mode = label;
+        }
+        persist_captured(app, capture)
+    })
+}
+
+async fn run_blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+pub fn prepare_hidden_overlay(app: &AppHandle) {
+    apply_window_mode(app, false, true);
+    if let Some(window) = overlay(app) {
+        let _ = window.unminimize();
+        let _ = window.set_min_size(None::<LogicalSize<f64>>);
+        let _ = window.set_max_size(None::<LogicalSize<f64>>);
+        let _ = window.hide();
+    }
+}
+
+fn raise_overlay(app: &AppHandle) {
+    if let Some(window) = overlay(app) {
+        let _ = window.unminimize();
+        let expanded = app
+            .state::<AppState>()
+            .expanded
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(false);
+        let _ = window.set_skip_taskbar(!expanded);
+        let _ = window.set_always_on_top(!expanded);
+        if !expanded {
+            let _ = window.center();
+        }
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+pub fn show_settings(app: &AppHandle) {
+    apply_window_mode(app, true, true);
+    let _ = app.emit("claire://settings", true);
+    raise_overlay(app);
+}
+
+pub fn wipe_context(app: &AppHandle) -> Result<(), String> {
+    storage::clear_context(app)?;
+    let state = app.state::<AppState>();
+    if let Ok(mut session) = state.session.lock() {
+        session.messages.clear();
+        session.summary.clear();
+        session.total_messages = 0;
+        session.epoch = session.epoch.saturating_add(1);
+    }
+    if let Ok(mut capture) = state.latest_capture.lock() {
+        *capture = None;
+    }
+    let _ = app.emit("claire://cleared", true);
+    Ok(())
+}
+
+fn recapture_inner(app: &AppHandle) -> Result<CapturePayload, String> {
+    recapture_memory(app)
+}
+
+fn recapture_memory(app: &AppHandle) -> Result<CapturePayload, String> {
+    let state = app.state::<AppState>();
+    let settings = lock_settings(&state)?;
+    if settings.capture_mode == CaptureMode::Current || settings.capture_display_ids.is_empty() {
+        let max_width = settings.downscale_max_width;
+        return recapture_pinned(app, pinned_target(app), max_width);
+    }
+    with_overlay_hidden(app, || {
+        let capture = capture::capture(&settings)?;
+        persist_captured(app, capture)
+    })
+}
+
+fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+    let payload = persist_capture_result(app, capture.clone())?;
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = storage::persist_capture(&app, &capture);
+    });
+    Ok(payload)
+}
+
+fn persist_capture_result(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+    let state = app.state::<AppState>();
+    let payload = capture.to_payload();
+    *state
+        .latest_capture
+        .lock()
+        .map_err(|err| err.to_string())? = Some(capture);
+    Ok(payload)
+}
+
+#[tauri::command]
+pub async fn list_displays() -> Result<Vec<capture::DisplayInfo>, String> {
+    run_blocking(capture::list_displays).await
+}
+
+#[tauri::command]
+pub async fn capture_displays(app: AppHandle, state: State<'_, AppState>, ids: Vec<u32>) -> Result<CapturePayload, String> {
+    {
+        let mut settings = state.settings.lock().map_err(|err| err.to_string())?;
+        settings.capture_mode = crate::settings::CaptureMode::All;
+        settings.capture_display_ids = ids.clone();
+    }
+    let max_width = lock_settings(&state)?.downscale_max_width;
+    run_blocking(move || {
+        with_overlay_hidden(&app, || {
+            let capture = capture::capture_ids(&ids, max_width)?;
+            persist_captured(&app, capture)
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
+    lock_settings(&state)
+}
+
+#[tauri::command]
+pub fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    storage::save_settings(&app, &settings)?;
+    hotkey::register(&app, &settings.hotkey)?;
+    *state.settings.lock().map_err(|err| err.to_string())? = settings.clone();
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn get_latest_capture(state: State<AppState>) -> Result<Option<CapturePayload>, String> {
+    Ok(state
+        .latest_capture
+        .lock()
+        .map_err(|err| err.to_string())?
+        .as_ref()
+        .map(|capture| capture.to_payload()))
+}
+
+#[tauri::command]
+pub fn new_chat(app: AppHandle) -> Result<(), String> {
+    reset_session(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
+    dismiss(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_window_mode(app: AppHandle, expanded: bool) -> Result<(), String> {
+    apply_window_mode(&app, expanded, false);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_settings(app: AppHandle) {
+    show_settings(&app);
+}
+
+#[tauri::command]
+pub fn clear_context(app: AppHandle) -> Result<(), String> {
+    wipe_context(&app)
+}
+
+#[tauri::command]
+pub fn set_capture_mode(
+    state: State<AppState>,
+    mode: crate::settings::CaptureMode,
+    display_ids: Option<Vec<u32>>,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock().map_err(|err| err.to_string())?;
+    settings.capture_mode = mode;
+    if let Some(ids) = display_ids {
+        settings.capture_display_ids = ids;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn recapture(app: AppHandle) -> Result<CapturePayload, String> {
+    run_blocking(move || recapture_inner(&app)).await
+}
+
+#[tauri::command]
+pub fn storage_info(app: AppHandle, state: State<AppState>) -> Result<StorageInfo, String> {
+    let history_count = state
+        .session
+        .lock()
+        .map(|session| session.messages.len())
+        .unwrap_or(0);
+    Ok(StorageInfo {
+        app_data_dir: storage::app_data_dir(&app)?.display().to_string(),
+        settings_path: storage::settings_path(&app)?.display().to_string(),
+        context_dir: storage::context_dir(&app)?.display().to_string(),
+        history_count,
+    })
+}
+
+#[tauri::command]
+pub fn open_storage_folder(app: AppHandle) -> Result<(), String> {
+    let dir = storage::app_data_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&dir)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&dir)
+            .spawn()
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ask_claire(
+    app: AppHandle,
+    query: String,
+    include_search: Option<bool>,
+) -> Result<AskResult, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Err("Query is empty".into());
+    }
+
+    let (settings, history, thread_context, png, epoch) = {
+        let state = app.state::<AppState>();
+        let settings = lock_settings(&state)?;
+        let session = state.session.lock().map_err(|err| err.to_string())?;
+        let window = if settings.history_limit == 0 {
+            0
+        } else {
+            settings.history_limit
+        };
+        let history = if window == 0 {
+            Vec::new()
+        } else {
+            let start = session.messages.len().saturating_sub(window);
+            session.messages[start..].to_vec()
+        };
+        let thread_context = if session.total_messages > window && !session.summary.is_empty() {
+            Some(session.summary.clone())
+        } else {
+            None
+        };
+        let png = state
+            .latest_capture
+            .lock()
+            .map_err(|err| err.to_string())?
+            .as_ref()
+            .map(|capture| capture.png.clone());
+        (settings, history, thread_context, png, session.epoch)
+    };
+
+    let want_search = include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
+    let mut used_search = false;
+    let search_block = if want_search {
+        match search::google_search(&settings, &query).await {
+            Ok(block) => {
+                used_search = true;
+                Some(block)
+            }
+            Err(err) => {
+                let _ = app.emit("claire://error", err);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let result = llm::complete(
+        &app,
+        &settings,
+        &history,
+        thread_context.as_deref(),
+        &query,
+        png.as_deref(),
+        search_block.as_deref(),
+    )
+    .await
+    .map_err(|err| {
+        let _ = app.emit("claire://error", err.clone());
+        err
+    })?;
+
+    let mut summary_job = None;
+    {
+        let state = app.state::<AppState>();
+        let mut session = state.session.lock().map_err(|err| err.to_string())?;
+        if settings.history_limit > 0 && session.epoch == epoch {
+            storage::push_turn(
+                &app,
+                &mut session,
+                query.clone(),
+                result.answer.clone(),
+                settings.history_limit,
+            );
+            summary_job = Some(epoch);
+        }
+    }
+    if let Some(epoch) = summary_job {
+        spawn_context_update(
+            app.clone(),
+            settings.clone(),
+            query,
+            result.answer.clone(),
+            epoch,
+        );
+    }
+
+    Ok(AskResult {
+        answer: result.answer,
+        used_search,
+        used_vision: result.used_vision,
+    })
+}
+
+fn spawn_context_update(
+    app: AppHandle,
+    settings: Settings,
+    query: String,
+    reply: String,
+    epoch: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let _gate = state.context_gate.lock().await;
+        let previous = {
+            let session = match state.session.lock() {
+                Ok(session) => session,
+                Err(_) => return,
+            };
+            if session.epoch != epoch {
+                return;
+            }
+            session.summary.clone()
+        };
+        match llm::update_thread_context(&settings, &previous, &query, &reply).await {
+            Ok(summary) if !summary.trim().is_empty() => {
+                if let Ok(mut session) = state.session.lock() {
+                    if session.epoch != epoch {
+                        return;
+                    }
+                    session.summary = summary.trim().to_string();
+                    let _ = storage::save_session(&app, &session);
+                }
+            }
+            Err(err) => eprintln!("clAIre context thread: {err}"),
+            _ => {}
+        }
+    });
+}

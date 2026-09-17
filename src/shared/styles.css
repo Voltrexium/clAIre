@@ -1,0 +1,214 @@
+:root {
+  color-scheme: dark;
+  /* primary — dark-mode neutrals */
+  --bg: #0b0b0d;
+  --text: #ececef;
+  --card: #121216;
+  --card-border: rgba(255, 255, 255, 0.1);
+  --muted: #9a9aa4;
+  --input: rgba(255, 255, 255, 0.06);
+  --panel: rgba(255, 255, 255, 0.04);
+  --code: rgba(255, 255, 255, 0.08);
+  --code-block: rgba(0, 0, 0, 0.45);
+  /* accent — purple */
+  --accent: #b794f6;
+  --accent-strong: #cbb2ff;
+  --accent-soft: rgba(183, 148, 246, 0.16);
+  --on-accent: #16141c;
+  --danger: #e08a7a;
+  --danger-soft: rgba(224, 138, 122, 0.12);
+  --radius: 12px;
+  --control-h: 36px;
+  --control-px: 12px;
+  --gap: 8px;
+  --font: "Segoe UI", "SF Pro Display", "Helvetica Neue", sans-serif;
+  --font-size: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: auto;
+  min-height: 0;
+  font-family: var(--font);
+  font-size: var(--font-size);
+  color: var(--text);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.ghost,
+.primary,
+.danger,
+.chip,
+.send {
+  height: var(--control-h);
+  padding: 0 var(--control-px);
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  font-size: 0.875rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: 120ms ease;
+  flex-shrink: 0;
+}
+
+.ghost {
+  background: transparent;
+  border-color: var(--card-border);
+  color: var(--muted);
+}
+
+.ghost:hover {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.primary:hover {
+  background: var(--accent-strong);
+}
+
+.chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.danger {
+  background: transparent;
+  border-color: rgba(224, 138, 122, 0.45);
+  color: var(--danger);
+}
+
+.danger:hover {
+  background: var(--danger-soft);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.field span,
+.field label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.field input,
+.field textarea,
+.field select {
+  height: var(--control-h);
+  background: var(--input);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  padding: 0 var(--control-px);
+  outline: none;
+}
+
+.field textarea {
+  height: auto;
+  padding: 10px var(--control-px);
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: var(--accent);
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.chip {
+  background: transparent;
+  border-color: var(--card-border);
+  color: var(--muted);
+}
+
+.chip.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.window-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.window-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.window-row {
+  height: var(--control-h);
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: 0 6px 0 12px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  background: var(--input);
+}
+
+.window-row.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.window-row button {
+  height: var(--control-h);
+  min-width: var(--control-h);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.window-row .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  justify-content: flex-start;
+}
+
+.window-row .remove {
+  color: var(--danger);
+}

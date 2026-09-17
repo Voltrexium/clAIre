@@ -1,0 +1,37 @@
+[package]
+name = "claire"
+version = "0.1.0"
+description = "Minimalist AI context assistant"
+authors = ["clAIre"]
+edition = "2021"
+
+[lib]
+name = "claire_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tokio = { version = "1", features = ["macros", "sync"] }
+xcap = "0.9"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+chrono = { version = "0.4", features = ["clock", "serde"] }
+futures-util = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+xcb = { version = "1.7", features = ["randr"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 16
+lto = "thin"
+opt-level = "s"
+strip = true

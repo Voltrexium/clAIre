@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Frontend build
+dist/
+dist-ssr/
+*.local
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Logs and editor
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Env / secrets — credentials live in the app data directory, never here
+.env
+.env.*
+!.env.example
