@@ -64,8 +64,10 @@ export default function Overlay() {
   const captureRef = useRef<CapturePayload | null>(null);
   const pinToBottomRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const windowListBusy = useRef(false);
+  const [stayOpen, setStayOpen] = useState(false);
   const expanded =
-    showSettings || log.length > 0 || captureMode === "all";
+    showSettings || log.length > 0 || captureMode === "all" || stayOpen;
 
   const closeSettings = useCallback(() => {
     showSettingsRef.current = false;
@@ -74,6 +76,7 @@ export default function Overlay() {
 
   const openSettingsView = useCallback(() => {
     showSettingsRef.current = true;
+    setStayOpen(true);
     setShowSettings(true);
   }, []);
 
@@ -205,6 +208,7 @@ export default function Overlay() {
         captureModeRef.current = "current";
         selectedIdsRef.current = [];
         setSelectedIds([]);
+        setStayOpen(false);
         void persistCaptureMode("current", []);
         captureStale.current = true;
         setWindowLabel(label || "");
@@ -251,27 +255,71 @@ export default function Overlay() {
     setPreview(null);
   }
 
-  function refreshWindowList() {
+  const refreshWindowList = useCallback((quiet = false) => {
+    if (windowListBusy.current) return;
+    windowListBusy.current = true;
     void listDisplays()
-      .then(setDisplays)
+      .then((next) => {
+        setDisplays(next);
+        const alive = new Set(next.map((display) => display.id));
+        const ids = selectedIdsRef.current.filter((id) => alive.has(id));
+        if (ids.length !== selectedIdsRef.current.length) {
+          selectedIdsRef.current = ids;
+          setSelectedIds(ids);
+          if (captureModeRef.current === "all") {
+            void persistCaptureMode("all", ids);
+          }
+        }
+      })
       .catch((err) => {
-        setDisplays([]);
-        setError(String(err));
+        if (!quiet) {
+          setDisplays([]);
+          setError(String(err));
+        }
+      })
+      .finally(() => {
+        windowListBusy.current = false;
       });
-  }
+  }, []);
+
+  useEffect(() => {
+    if (captureMode !== "all" || showSettings) return;
+    let cancelled = false;
+    const tick = () => {
+      void (async () => {
+        try {
+          if (!(await getCurrentWindow().isVisible())) return;
+        } catch {
+          /* still refresh */
+        }
+        if (!cancelled) refreshWindowList(true);
+      })();
+    };
+    tick();
+    const timer = window.setInterval(tick, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [captureMode, showSettings, refreshWindowList]);
 
   function setMode(next: CaptureMode) {
+    if (next === captureModeRef.current) {
+      if (next === "all") refreshWindowList();
+      return;
+    }
     captureModeRef.current = next;
     setCaptureMode(next);
-    captureStale.current = true;
     window.clearTimeout(debounceRef.current);
     if (next === "current") {
       selectedIdsRef.current = [];
       setSelectedIds([]);
+      captureStale.current = true;
       void persistCaptureMode("current", []);
-      void refreshCapture();
       return;
     }
+    setStayOpen(true);
+    captureStale.current = true;
     void persistCaptureMode("all", selectedIdsRef.current);
     refreshWindowList();
   }
@@ -280,6 +328,8 @@ export default function Overlay() {
     const el = cardRef.current;
     if (!el) return;
     let lastH = 0;
+    let fitted = false;
+    let cancelled = false;
     const positions = new Map<Element, { top: number; left: number }>();
     const remember = (node: EventTarget | null) => {
       if (!(node instanceof HTMLElement) || node === el) return;
@@ -299,6 +349,20 @@ export default function Overlay() {
       });
     };
 
+    const sectionHeight = (kid: HTMLElement) => {
+      if (!kid.classList.contains("overlay-body")) return kid.offsetHeight;
+      const cs = getComputedStyle(kid);
+      const gap = parseFloat(cs.rowGap || cs.gap) || 0;
+      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      const kids = Array.from(kid.children) as HTMLElement[];
+      let height = pad;
+      kids.forEach((child, index) => {
+        height += child.offsetHeight;
+        if (index < kids.length - 1) height += gap;
+      });
+      return height;
+    };
+
     const naturalHeight = () => {
       const cs = getComputedStyle(el);
       const gap = parseFloat(cs.rowGap || cs.gap) || 0;
@@ -308,18 +372,24 @@ export default function Overlay() {
       kids.forEach((kid, index) => {
         const kcs = getComputedStyle(kid);
         height += (parseFloat(kcs.marginTop) || 0) + (parseFloat(kcs.marginBottom) || 0);
-        height += kid.classList.contains("overlay-body") ? kid.scrollHeight : kid.offsetHeight;
+        height += sectionHeight(kid);
         if (index < kids.length - 1) height += gap;
       });
       return Math.ceil(height);
     };
 
     const apply = () => {
+      if (cancelled) return;
       const height = Math.min(Math.max(naturalHeight(), 140), 800);
       if (el.style.height !== `${height}px`) el.style.height = `${height}px`;
-      if (Math.abs(height - lastH) < 1) return;
+      const sameHeight = Math.abs(height - lastH) < 1;
       lastH = height;
+      if (sameHeight && fitted) return;
+      fitted = false;
       void fitOverlay(880, height)
+        .then(() => {
+          fitted = true;
+        })
         .catch(() => undefined)
         .finally(() => {
           restore();
@@ -334,12 +404,15 @@ export default function Overlay() {
       observer.observe(node);
     });
     apply();
+    const retry = window.setTimeout(apply, 50);
     return () => {
+      cancelled = true;
       observer.disconnect();
+      window.clearTimeout(retry);
       el.removeEventListener("scroll", onScroll, true);
       el.style.height = "";
     };
-  }, [expanded, showSettings, log.length, captureMode, displays.length, selectedIds.length]);
+  }, [expanded, showSettings, log.length, captureMode, displays.length, selectedIds.length, capturing]);
 
   useLayoutEffect(() => {
     const el = bodyRef.current;
@@ -543,22 +616,25 @@ export default function Overlay() {
             >
               Settings
             </button>
-            {expanded && (
-              confirmClear ? (
-                <>
-                  <span className="clear-confirm">Clear chat and context?</span>
-                  <button className="danger" type="button" onClick={() => void onClear()}>
-                    Clear
-                  </button>
-                  <button className="ghost" type="button" onClick={() => setConfirmClear(false)}>
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <button className="danger" type="button" onClick={() => setConfirmClear(true)}>
+            {confirmClear ? (
+              <>
+                <span className="clear-confirm">Clear chat and context?</span>
+                <button className="danger" type="button" onClick={() => void onClear()}>
                   Clear
                 </button>
-              )
+                <button className="ghost" type="button" onClick={() => setConfirmClear(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                className="danger"
+                type="button"
+                disabled={busy || (log.length === 0 && !capture)}
+                onClick={() => setConfirmClear(true)}
+              >
+                Clear
+              </button>
             )}
           </div>
           <button

@@ -276,8 +276,6 @@ body,
   border-radius: var(--radius);
   background: var(--panel);
   flex: 0 0 auto;
-  min-height: 240px;
-  overflow: visible;
 }
 
 .window-panel .hint {

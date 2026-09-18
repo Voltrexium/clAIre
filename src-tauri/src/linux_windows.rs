@@ -1,0 +1,436 @@
+use std::collections::HashMap;
+use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+
+use crate::capture::DisplayInfo;
+
+fn extra_rects() -> &'static Mutex<HashMap<u32, (i32, i32, u32, u32)>> {
+    static EXTRA_RECTS: OnceLock<Mutex<HashMap<u32, (i32, i32, u32, u32)>>> = OnceLock::new();
+    EXTRA_RECTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn extra_rect(id: u32) -> Option<(i32, i32, u32, u32)> {
+    extra_rects().lock().ok()?.get(&id).copied()
+}
+
+pub fn list_extra() -> Vec<DisplayInfo> {
+    let mut out = Vec::new();
+    merge(&mut out, atspi_windows());
+    merge(&mut out, hypr_windows());
+    merge(&mut out, sway_windows());
+    merge(&mut out, niri_windows());
+    if let Ok(mut rects) = extra_rects().lock() {
+        rects.clear();
+        for item in &out {
+            if item.width > 0 && item.height > 0 {
+                rects.insert(item.id, (item.x, item.y, item.width, item.height));
+            }
+        }
+    }
+    out
+}
+
+fn merge(out: &mut Vec<DisplayInfo>, extra: Vec<DisplayInfo>) {
+    let extra_current = extra.iter().any(|item| item.current);
+    if extra_current {
+        for item in out.iter_mut() {
+            item.current = false;
+            item.primary = false;
+        }
+    }
+    for item in extra {
+        if out.iter().any(|existing| same_window(existing, &item)) {
+            if item.current {
+                if let Some(existing) = out.iter_mut().find(|existing| same_window(existing, &item)) {
+                    existing.current = true;
+                    existing.primary = true;
+                }
+            }
+            continue;
+        }
+        out.push(item);
+    }
+}
+
+pub fn same_window(a: &DisplayInfo, b: &DisplayInfo) -> bool {
+    if a.id != 0 && a.id == b.id {
+        return true;
+    }
+    if a.name.eq_ignore_ascii_case(&b.name) {
+        return true;
+    }
+    overlap(a, b) >= 0.55
+}
+
+fn overlap(a: &DisplayInfo, b: &DisplayInfo) -> f32 {
+    if a.width < 1 || a.height < 1 || b.width < 1 || b.height < 1 {
+        return 0.0;
+    }
+    let left = a.x.max(b.x);
+    let top = a.y.max(b.y);
+    let right = (a.x + a.width as i32).min(b.x + b.width as i32);
+    let bottom = (a.y + a.height as i32).min(b.y + b.height as i32);
+    let w = (right - left).max(0) as f32;
+    let h = (bottom - top).max(0) as f32;
+    let inter = w * h;
+    if inter <= 0.0 {
+        return 0.0;
+    }
+    let area_a = a.width as f32 * a.height as f32;
+    let area_b = b.width as f32 * b.height as f32;
+    inter / area_a.min(area_b)
+}
+
+fn remember_id(name: &str, x: i32, y: i32, width: u32, height: u32) -> u32 {
+    let mut hash: u32 = 0x811c9dc5;
+    for byte in name.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash ^= x as u32;
+    hash ^= (y as u32).rotate_left(8);
+    hash ^= width.rotate_left(16);
+    hash ^= height.rotate_left(24);
+    hash | 0x8000_0000
+}
+
+fn skip(app: &str, title: &str, width: u32, height: u32) -> bool {
+    crate::capture::linux_is_ours(app, title) || crate::capture::linux_is_shell(app, title, width, height)
+}
+
+fn atspi_windows() -> Vec<DisplayInfo> {
+    atspi_windows_inner().unwrap_or_default()
+}
+
+fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
+    use zbus::blocking::Connection;
+    use zbus::zvariant::OwnedObjectPath;
+
+    let session = Connection::session().map_err(|err| err.to_string())?;
+    let address: String = session
+        .call_method(
+            Some("org.a11y.Bus"),
+            "/org/a11y/bus",
+            Some("org.a11y.Bus"),
+            "GetAddress",
+            &(),
+        )
+        .map_err(|err| err.to_string())?
+        .body()
+        .deserialize()
+        .map_err(|err| err.to_string())?;
+    let atspi = zbus::blocking::connection::Builder::address(address.as_str())
+        .map_err(|err| err.to_string())?
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    let apps: Vec<(String, OwnedObjectPath)> = children(&atspi, "org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root")?;
+    let mut out = Vec::new();
+    for (bus, _) in apps {
+        let app = property(&atspi, &bus, "/org/a11y/atspi/accessible/root", "Name").unwrap_or_default();
+        let frames = children(&atspi, &bus, "/org/a11y/atspi/accessible/root").unwrap_or_default();
+        for (_, path) in frames {
+            let role = role_name(&atspi, &bus, path.as_str());
+            if !matches!(
+                role.as_str(),
+                "frame" | "window" | "dialog" | "alert" | "file chooser" | "color chooser"
+            ) {
+                continue;
+            }
+            let title = property(&atspi, &bus, path.as_str(), "Name").unwrap_or_default();
+            let (x, y, width, height) = extents(&atspi, &bus, path.as_str()).unwrap_or((0, 0, 0, 0));
+            if width > 0 && height > 0 && (width < 32 || height < 32) {
+                continue;
+            }
+            if skip(&app, &title, width, height) {
+                continue;
+            }
+            let name = crate::capture::pretty_label(&app, &title);
+            let current = is_active(&atspi, &bus, path.as_str());
+            out.push(DisplayInfo {
+                id: remember_id(&name, x, y, width, height),
+                name,
+                x,
+                y,
+                width,
+                height,
+                primary: current,
+                current,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn children(
+    conn: &zbus::blocking::Connection,
+    dest: &str,
+    path: &str,
+) -> Result<Vec<(String, zbus::zvariant::OwnedObjectPath)>, String> {
+    let reply = conn
+        .call_method(
+            Some(dest),
+            path,
+            Some("org.a11y.atspi.Accessible"),
+            "GetChildren",
+            &(),
+        )
+        .map_err(|err| err.to_string())?;
+    reply.body().deserialize().map_err(|err| err.to_string())
+}
+
+fn property(conn: &zbus::blocking::Connection, dest: &str, path: &str, name: &str) -> Option<String> {
+    let reply = conn
+        .call_method(
+            Some(dest),
+            path,
+            Some("org.freedesktop.DBus.Properties"),
+            "Get",
+            &("org.a11y.atspi.Accessible", name),
+        )
+        .ok()?;
+    let body = reply.body();
+    let value: zbus::zvariant::Value<'_> = body.deserialize().ok()?;
+    match value {
+        zbus::zvariant::Value::Str(text) => {
+            let text = text.to_string();
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn role_name(conn: &zbus::blocking::Connection, dest: &str, path: &str) -> String {
+    conn.call_method(
+        Some(dest),
+        path,
+        Some("org.a11y.atspi.Accessible"),
+        "GetRoleName",
+        &(),
+    )
+    .ok()
+    .and_then(|reply| reply.body().deserialize().ok())
+    .unwrap_or_default()
+}
+
+fn extents(
+    conn: &zbus::blocking::Connection,
+    dest: &str,
+    path: &str,
+) -> Option<(i32, i32, u32, u32)> {
+    let reply = conn
+        .call_method(
+            Some(dest),
+            path,
+            Some("org.a11y.atspi.Component"),
+            "GetExtents",
+            &(0u32),
+        )
+        .ok()?;
+    let (x, y, width, height): (i32, i32, i32, i32) = reply.body().deserialize().ok()?;
+    Some((x, y, width.max(0) as u32, height.max(0) as u32))
+}
+
+fn is_active(conn: &zbus::blocking::Connection, dest: &str, path: &str) -> bool {
+    const ACTIVE: u32 = 1;
+    const FOCUSED: u32 = 19;
+    let reply = conn.call_method(
+        Some(dest),
+        path,
+        Some("org.a11y.atspi.Accessible"),
+        "GetState",
+        &(),
+    );
+    let bits: Vec<u32> = match reply.and_then(|msg| msg.body().deserialize()) {
+        Ok(bits) => bits,
+        Err(_) => return false,
+    };
+    has_state(&bits, ACTIVE) || has_state(&bits, FOCUSED)
+}
+
+fn has_state(bits: &[u32], state: u32) -> bool {
+    let index = (state / 32) as usize;
+    let bit = state % 32;
+    bits.get(index)
+        .copied()
+        .is_some_and(|value| value & (1 << bit) != 0)
+}
+
+fn hypr_windows() -> Vec<DisplayInfo> {
+    let Some(raw) = Command::new("hyprctl")
+        .args(["clients", "-j"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&raw.stdout) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        if row.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false)
+            || !row.get("mapped").and_then(|v| v.as_bool()).unwrap_or(true)
+        {
+            continue;
+        }
+        let app = row
+            .get("class")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let title = row
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let at = row.get("at").and_then(|v| v.as_array());
+        let size = row.get("size").and_then(|v| v.as_array());
+        let x = at.and_then(|v| v.first()).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let y = at.and_then(|v| v.get(1)).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if skip(app, title, width, height) {
+            continue;
+        }
+        let current = row
+            .get("focusHistoryID")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1)
+            == 0;
+        let name = crate::capture::pretty_label(app, title);
+        out.push(DisplayInfo {
+            id: remember_id(&name, x, y, width, height),
+            name,
+            x,
+            y,
+            width,
+            height,
+            primary: current,
+            current,
+        });
+    }
+    out
+}
+
+fn sway_windows() -> Vec<DisplayInfo> {
+    let Some(raw) = Command::new("swaymsg")
+        .args(["-t", "get_tree"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+    else {
+        return Vec::new();
+    };
+    let Ok(tree) = serde_json::from_slice::<serde_json::Value>(&raw.stdout) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    walk_sway(&tree, &mut out);
+    out
+}
+
+fn walk_sway(node: &serde_json::Value, out: &mut Vec<DisplayInfo>) {
+    let app = node
+        .get("app_id")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            node.get("window_properties")
+                .and_then(|v| v.get("class"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or_default();
+    let title = node
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let rect = node.get("rect");
+    let x = rect.and_then(|v| v.get("x")).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let y = rect.and_then(|v| v.get("y")).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let width = rect.and_then(|v| v.get("width")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let height = rect
+        .and_then(|v| v.get("height"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let is_leaf = node
+        .get("nodes")
+        .and_then(|v| v.as_array())
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
+        && node
+            .get("floating_nodes")
+            .and_then(|v| v.as_array())
+            .map(|v| v.is_empty())
+            .unwrap_or(true);
+    if is_leaf && (!app.is_empty() || node.get("pid").is_some()) && !skip(app, title, width, height) {
+        let current = node.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
+        let name = crate::capture::pretty_label(app, title);
+        out.push(DisplayInfo {
+            id: remember_id(&name, x, y, width, height),
+            name,
+            x,
+            y,
+            width,
+            height,
+            primary: current,
+            current,
+        });
+    }
+    if let Some(kids) = node.get("nodes").and_then(|v| v.as_array()) {
+        for kid in kids {
+            walk_sway(kid, out);
+        }
+    }
+    if let Some(kids) = node.get("floating_nodes").and_then(|v| v.as_array()) {
+        for kid in kids {
+            walk_sway(kid, out);
+        }
+    }
+}
+
+fn niri_windows() -> Vec<DisplayInfo> {
+    let Some(raw) = Command::new("niri")
+        .args(["msg", "-j", "windows"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+    else {
+        return Vec::new();
+    };
+    let Ok(rows) = serde_json::from_slice::<Vec<serde_json::Value>>(&raw.stdout) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        let app = row.get("app_id").and_then(|v| v.as_str()).unwrap_or_default();
+        let title = row.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+        let layout = row.get("layout");
+        let size = layout.and_then(|v| v.get("window_size")).and_then(|v| v.as_array());
+        let pos = layout
+            .and_then(|v| v.get("tile_pos_in_workspace_view"))
+            .and_then(|v| v.as_array());
+        let x = pos.and_then(|v| v.first()).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+        let y = pos.and_then(|v| v.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+        let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        if skip(app, title, width, height) {
+            continue;
+        }
+        let current = row.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false);
+        let name = crate::capture::pretty_label(app, title);
+        out.push(DisplayInfo {
+            id: remember_id(&name, x, y, width, height),
+            name,
+            x,
+            y,
+            width,
+            height,
+            primary: current,
+            current,
+        });
+    }
+    out
+}

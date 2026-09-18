@@ -582,6 +582,7 @@ dependencies = [
  "tokio",
  "xcap",
  "xcb",
+ "zbus",
 ]
 
 [[package]]

@@ -66,6 +66,7 @@ pub struct AppState {
     pub pinned_current: Mutex<Option<(Option<u32>, String)>>,
     pub context_gate: tokio::sync::Mutex<()>,
     pub expanded: Mutex<bool>,
+    pub overlay_hidden: Mutex<bool>,
 }
 
 impl Default for AppState {
@@ -77,6 +78,7 @@ impl Default for AppState {
             pinned_current: Mutex::new(None),
             context_gate: tokio::sync::Mutex::new(()),
             expanded: Mutex::new(false),
+            overlay_hidden: Mutex::new(true),
         }
     }
 }
@@ -85,7 +87,7 @@ pub fn encode_png(img: image::RgbaImage) -> Result<Capture, String> {
     let width = img.width();
     let height = img.height();
     let mut out = Vec::with_capacity((width * height) as usize / 4);
-    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::Adaptive)
+    PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter)
         .write_image(
             img.as_raw(),
             width,

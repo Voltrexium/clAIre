@@ -23,10 +23,11 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut builder = TrayIconBuilder::with_id("claire")
         .menu(&menu)
-        .show_menu_on_left_click(false)
+        // Linux tray click events are not emitted; left click must open the menu.
+        .show_menu_on_left_click(cfg!(target_os = "linux"))
         .tooltip("clAIre")
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "ask" => commands::summon(app),
+            "ask" => commands::open_overlay(app),
             "settings" => commands::show_settings(app),
             "clear" => {
                 let _ = commands::wipe_context(app);
@@ -41,7 +42,7 @@ pub fn setup(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } = event
             {
-                commands::summon(tray.app_handle());
+                commands::open_overlay(tray.app_handle());
             }
         });
 

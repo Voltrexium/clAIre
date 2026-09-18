@@ -1,4 +1,6 @@
 mod capture;
+#[cfg(target_os = "linux")]
+mod linux_windows;
 mod commands;
 mod hotkey;
 mod llm;
@@ -16,7 +18,7 @@ use state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            commands::summon(app);
+            commands::open_overlay(app);
         }))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::default())

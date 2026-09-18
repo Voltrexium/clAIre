@@ -31,12 +31,8 @@ fn list_windows_info() -> Result<Vec<DisplayInfo>, String> {
     let mut out = linux_list_windows();
     #[cfg(not(target_os = "linux"))]
     let mut out = Vec::new();
-    let xcap_list = xcap_list_windows()?;
-    if xcap_list.len() > out.len() {
-        out = merge_window_lists(xcap_list, out);
-    } else {
-        out = merge_window_lists(out, xcap_list);
-    }
+    let xcap_list = xcap_list_windows().unwrap_or_default();
+    out = merge_window_lists(out, xcap_list);
     Ok(out)
 }
 
@@ -66,8 +62,15 @@ fn xcap_list_windows() -> Result<Vec<DisplayInfo>, String> {
 fn merge_window_lists(mut primary: Vec<DisplayInfo>, extra: Vec<DisplayInfo>) -> Vec<DisplayInfo> {
     for item in extra {
         let duplicate = primary.iter().any(|existing| {
-            (item.id != 0 && existing.id == item.id)
-                || (existing.name == item.name && existing.x == item.x && existing.y == item.y)
+            #[cfg(target_os = "linux")]
+            {
+                crate::linux_windows::same_window(existing, &item)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                (item.id != 0 && existing.id == item.id)
+                    || (existing.name == item.name && existing.x == item.x && existing.y == item.y)
+            }
         });
         if !duplicate {
             primary.push(item);
@@ -91,8 +94,10 @@ pub struct CurrentTarget {
 }
 
 pub fn current_target() -> CurrentTarget {
-    #[cfg(target_os = "linux")]
-    if let Some(item) = linux_list_windows().into_iter().find(|item| item.current) {
+    if let Some(item) = list_windows_info()
+        .ok()
+        .and_then(|list| list.into_iter().find(|item| item.current))
+    {
         return CurrentTarget {
             id: Some(item.id).filter(|id| *id != 0),
             label: item.name,
@@ -158,33 +163,47 @@ fn capture_id(
     monitors: &[Monitor],
     id: u32,
 ) -> Result<(String, RgbaImage), String> {
-    if let Some(info) = list_windows_info()
+    let listed = list_windows_info()
         .ok()
-        .and_then(|list| list.into_iter().find(|item| item.id == id))
-    {
-        if let Ok(image) = capture_rect(info.x, info.y, info.width, info.height) {
-            return Ok((info.name, image));
+        .and_then(|list| list.into_iter().find(|item| item.id == id));
+    let label = || {
+        listed
+            .as_ref()
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| format!("Window {id}"))
+    };
+
+    #[cfg(target_os = "linux")]
+    if let Some((x, y, width, height)) = crate::linux_windows::extra_rect(id) {
+        if let Ok(image) = capture_rect(x, y, width, height) {
+            return Ok((label(), image));
         }
     }
+
+    #[cfg(target_os = "linux")]
+    if let Ok(image) = linux_capture_window(id) {
+        return Ok((label(), image));
+    }
+
     if let Some(window) = windows.iter().find(|window| window.id().ok() == Some(id)) {
         if let Ok(image) = window.capture_image() {
             return Ok((window_label(window), image));
         }
-        if let Ok(image) = capture_rect(
-            window.x().unwrap_or(0),
-            window.y().unwrap_or(0),
-            window.width().unwrap_or(0),
-            window.height().unwrap_or(0),
-        ) {
-            return Ok((window_label(window), image));
+    }
+
+    if let Some(info) = listed.as_ref() {
+        if let Ok(image) = capture_rect(info.x, info.y, info.width, info.height) {
+            return Ok((info.name.clone(), image));
         }
     }
+
     if let Some(monitor) = monitors.iter().find(|monitor| monitor.id().ok() == Some(id)) {
         return Ok((
             monitor_label(monitor),
             monitor.capture_image().map_err(|err| err.to_string())?,
         ));
     }
+
     Err(format!("window {id} not found"))
 }
 
@@ -362,7 +381,7 @@ fn window_label(window: &Window) -> String {
     )
 }
 
-fn pretty_label(app: &str, title: &str) -> String {
+pub(crate) fn pretty_label(app: &str, title: &str) -> String {
     let app = app.trim();
     let title = title.trim();
     match (app.is_empty(), title.is_empty()) {
@@ -431,12 +450,81 @@ fn stitch_layout(tiles: Vec<(i32, i32, RgbaImage)>) -> RgbaImage {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_list_windows() -> Vec<DisplayInfo> {
-    linux_list_windows_inner().unwrap_or_default()
+fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
+    use xcb::x::{
+        Drawable, GetGeometry, GetImage, ImageFormat, ImageOrder, Window as XWindow,
+    };
+    use xcb::{Connection, XidNew};
+
+    if id == 0 {
+        return Err("Invalid window".into());
+    }
+    let display = std::env::var("DISPLAY").ok();
+    let (conn, _) = Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
+    let window = XWindow::new(id);
+    let geometry = conn.send_request(&GetGeometry {
+        drawable: Drawable::Window(window),
+    });
+    let geometry = conn.wait_for_reply(geometry).map_err(|err| err.to_string())?;
+    let width = geometry.width() as u32;
+    let height = geometry.height() as u32;
+    if width < 1 || height < 1 {
+        return Err("Window has no size".into());
+    }
+    let image = conn.send_request(&GetImage {
+        format: ImageFormat::ZPixmap,
+        drawable: Drawable::Window(window),
+        x: 0,
+        y: 0,
+        width: geometry.width(),
+        height: geometry.height(),
+        plane_mask: u32::MAX,
+    });
+    let image = conn.wait_for_reply(image).map_err(|err| err.to_string())?;
+    let bytes = image.data();
+    let depth = image.depth();
+    let setup = conn.get_setup();
+    let pixmap_format = setup
+        .pixmap_formats()
+        .iter()
+        .find(|item| item.depth() == depth)
+        .ok_or_else(|| format!("Unsupported image depth {depth}"))?;
+    let bits_per_pixel = pixmap_format.bits_per_pixel() as u32;
+    let bit_order = setup.bitmap_format_bit_order();
+    let mut rgba = vec![0u8; width as usize * height as usize * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let src = ((y * width + x) * bits_per_pixel / 8) as usize;
+            let dst = ((y * width + x) * 4) as usize;
+            let (r, g, b) = match (depth, bit_order) {
+                (24 | 32, ImageOrder::LsbFirst) => (bytes[src + 2], bytes[src + 1], bytes[src]),
+                (24 | 32, ImageOrder::MsbFirst) => (bytes[src], bytes[src + 1], bytes[src + 2]),
+                _ => return Err(format!("Unsupported image depth {depth}")),
+            };
+            rgba[dst] = r;
+            rgba[dst + 1] = g;
+            rgba[dst + 2] = b;
+            rgba[dst + 3] = 255;
+        }
+    }
+    RgbaImage::from_raw(width, height, rgba).ok_or_else(|| "Could not decode window image".into())
 }
 
 #[cfg(target_os = "linux")]
-fn linux_list_windows_inner() -> Result<Vec<DisplayInfo>, String> {
+fn linux_list_windows() -> Vec<DisplayInfo> {
+    let mut out = linux_list_windows_inner(false).unwrap_or_default();
+    let extras = crate::linux_windows::list_extra();
+    if extras.iter().any(|item| item.current) {
+        for item in &mut out {
+            item.current = false;
+            item.primary = false;
+        }
+    }
+    merge_window_lists(out, extras)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, String> {
     use xcb::x::{
         ATOM_ATOM, ATOM_NONE, ATOM_STRING, ATOM_WM_CLASS, ATOM_WM_NAME, Drawable, GetGeometry,
         GetProperty, InternAtom, TranslateCoordinates, Window as XWindow,
@@ -470,7 +558,11 @@ fn linux_list_windows_inner() -> Result<Vec<DisplayInfo>, String> {
         conn.wait_for_reply(cookie).map_err(|err| err.to_string())
     };
 
-    let client_list = intern("_NET_CLIENT_LIST_STACKING").or_else(|_| intern("_NET_CLIENT_LIST"))?;
+    let client_list = if active_only {
+        None
+    } else {
+        Some(intern("_NET_CLIENT_LIST_STACKING").or_else(|_| intern("_NET_CLIENT_LIST"))?)
+    };
     let net_wm_name = intern("_NET_WM_NAME").ok();
     let utf8 = intern("UTF8_STRING").ok();
     let wm_state = intern("_NET_WM_STATE").ok();
@@ -490,6 +582,9 @@ fn linux_list_windows_inner() -> Result<Vec<DisplayInfo>, String> {
                 }
             }
         }
+        let Some(client_list) = client_list else {
+            continue;
+        };
         let reply = match get_prop(root, client_list, ATOM_NONE, 16_384) {
             Ok(reply) => reply,
             Err(_) => continue,
@@ -498,6 +593,12 @@ fn linux_list_windows_inner() -> Result<Vec<DisplayInfo>, String> {
             if id != 0 && !ids.contains(&id) {
                 ids.push(id);
             }
+        }
+    }
+
+    if active_only {
+        if let Some(id) = active_id {
+            ids = vec![id];
         }
     }
 
@@ -582,12 +683,12 @@ fn linux_list_windows_inner() -> Result<Vec<DisplayInfo>, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn linux_is_ours(app: &str, title: &str) -> bool {
+pub(crate) fn linux_is_ours(app: &str, title: &str) -> bool {
     is_our_overlay(app, title)
 }
 
 #[cfg(target_os = "linux")]
-fn linux_is_shell(app: &str, title: &str, width: u32, height: u32) -> bool {
+pub(crate) fn linux_is_shell(app: &str, title: &str, width: u32, height: u32) -> bool {
     let app = app.to_lowercase();
     let title = title.to_lowercase();
     if height > 0 && height <= 40 && width >= height.saturating_mul(8) {

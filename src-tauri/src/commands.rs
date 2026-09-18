@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow};
 
@@ -43,25 +41,22 @@ pub fn apply_window_mode(app: &AppHandle, expanded: bool, force: bool) {
     }
     if let Ok(mut current) = state.expanded.lock() {
         *current = expanded;
-    }
-    let Some(window) = overlay(app) else {
-        return;
     };
-    let _ = window.set_resizable(false);
-    if expanded {
-        let _ = window.set_skip_taskbar(false);
-        let _ = window.set_always_on_top(false);
-    } else {
-        let _ = window.set_skip_taskbar(true);
-        let _ = window.set_always_on_top(true);
-    }
 }
 
 #[tauri::command]
 pub fn fit_overlay(app: AppHandle, _width: f64, height: f64) -> Result<(), String> {
+    if overlay_is_hidden(&app) {
+        return Ok(());
+    }
     let Some(window) = overlay(&app) else {
         return Ok(());
     };
+    pin_overlay_size(&window, height);
+    Ok(())
+}
+
+fn pin_overlay_size(window: &WebviewWindow, height: f64) {
     let width = 880.0;
     let height = height.clamp(140.0, 800.0);
     let size = LogicalSize::new(width, height);
@@ -69,7 +64,6 @@ pub fn fit_overlay(app: AppHandle, _width: f64, height: f64) -> Result<(), Strin
     let _ = window.set_min_size(Some(size));
     let _ = window.set_max_size(Some(size));
     let _ = window.set_size(size);
-    Ok(())
 }
 
 fn lock_settings(state: &AppState) -> Result<Settings, String> {
@@ -104,28 +98,50 @@ fn reset_chat(app: &AppHandle) {
     let _ = app.emit("claire://chat-cleared", true);
 }
 
+fn overlay_is_hidden(app: &AppHandle) -> bool {
+    app.state::<AppState>()
+        .overlay_hidden
+        .lock()
+        .map(|hidden| *hidden)
+        .unwrap_or(true)
+}
+
+fn set_overlay_hidden(app: &AppHandle, hidden: bool) {
+    if let Ok(mut flag) = app.state::<AppState>().overlay_hidden.lock() {
+        *flag = hidden;
+    }
+}
+
+fn overlay_is_open(app: &AppHandle) -> bool {
+    !overlay_is_hidden(app)
+}
+
+fn hide_overlay_window(app: &AppHandle) {
+    set_overlay_hidden(app, true);
+    let hide_app = app.clone();
+    run_on_main(app, move || {
+        let Some(window) = overlay(&hide_app) else {
+            return;
+        };
+        let _ = window.hide();
+    });
+}
+
 fn dismiss(app: &AppHandle) {
     reset_chat(app);
     apply_window_mode(app, false, true);
-    if let Some(window) = overlay(app) {
-        let _ = window.unminimize();
-        let _ = window.set_min_size(None::<LogicalSize<f64>>);
-        let _ = window.set_max_size(None::<LogicalSize<f64>>);
-        let _ = window.hide();
-    }
-}
-
-fn overlay_is_open(window: &WebviewWindow) -> bool {
-    window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false)
+    hide_overlay_window(app);
 }
 
 pub fn summon(app: &AppHandle) {
-    if let Some(window) = overlay(app) {
-        if overlay_is_open(&window) {
-            dismiss(app);
-            return;
-        }
+    if overlay_is_open(app) {
+        dismiss(app);
+        return;
     }
+    open_overlay(app);
+}
+
+pub fn open_overlay(app: &AppHandle) {
     force_current_window(app);
     recapture_then_show(app);
 }
@@ -137,29 +153,34 @@ fn recapture_then_show(app: &AppHandle) {
         .lock()
         .map(|settings| settings.downscale_max_width)
         .unwrap_or(1280);
-    let target = capture::current_target();
-    pin_current(app, &target);
-    let _ = app.emit("claire://summoned", target.label.clone());
-    if let Some(window) = overlay(app) {
-        let _ = window.hide();
-    }
+    let label = app
+        .state::<AppState>()
+        .pinned_current
+        .lock()
+        .ok()
+        .and_then(|pin| pin.as_ref().map(|(_, label)| label.clone()))
+        .unwrap_or_default();
+    let _ = app.emit("claire://summoned", label);
+    apply_window_mode(app, false, true);
+    raise_overlay(app);
     let capture_app = app.clone();
-    let task = tauri::async_runtime::spawn_blocking(move || {
-        recapture_pinned(&capture_app, target, max_width)
-    });
-    let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+        let work_app = capture_app.clone();
+        let result = run_blocking(move || {
+            let target = capture::current_target();
+            pin_current(&work_app, &target);
+            let _ = work_app.emit("claire://summoned", target.label.clone());
+            recapture_pinned(&work_app, target, max_width)
+        })
+        .await;
         match result {
             Ok(payload) => {
-                let _ = app.emit("claire://capture", payload);
+                let _ = capture_app.emit("claire://capture", payload);
             }
             Err(err) => {
-                let _ = app.emit("claire://error", err);
+                let _ = capture_app.emit("claire://error", err);
             }
         }
-        apply_window_mode(&app, false, true);
-        raise_overlay(&app);
     });
 }
 
@@ -180,20 +201,8 @@ fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
     target
 }
 
-fn with_overlay_hidden<T>(app: &AppHandle, work: impl FnOnce() -> T) -> T {
-    let window = overlay(app);
-    let was_open = window.as_ref().map(overlay_is_open).unwrap_or(false);
-    if was_open {
-        if let Some(window) = &window {
-            let _ = window.hide();
-        }
-        std::thread::sleep(Duration::from_millis(80));
-    }
-    let result = work();
-    if was_open {
-        raise_overlay(app);
-    }
-    result
+fn run_on_main(app: &AppHandle, work: impl FnOnce() + Send + 'static) {
+    let _ = app.run_on_main_thread(work);
 }
 
 fn recapture_pinned(
@@ -201,27 +210,25 @@ fn recapture_pinned(
     target: capture::CurrentTarget,
     max_width: u32,
 ) -> Result<CapturePayload, String> {
-    with_overlay_hidden(app, || {
-        let (mut capture, label) = match target.id {
-            Some(id) => match capture::capture_ids(&[id], max_width) {
-                Ok(capture) => (capture, target.label.clone()),
-                Err(_) => {
-                    let fresh = capture::current_target();
-                    pin_current(app, &fresh);
-                    let capture = match fresh.id {
-                        Some(id) => capture::capture_ids(&[id], max_width)?,
-                        None => capture::capture_primary(max_width)?,
-                    };
-                    (capture, fresh.label)
-                }
-            },
-            None => (capture::capture_primary(max_width)?, target.label.clone()),
-        };
-        if !label.is_empty() {
-            capture.mode = label;
-        }
-        persist_captured(app, capture)
-    })
+    let (mut capture, label) = match target.id {
+        Some(id) => match capture::capture_ids(&[id], max_width) {
+            Ok(capture) => (capture, target.label.clone()),
+            Err(_) => {
+                let fresh = capture::current_target();
+                pin_current(app, &fresh);
+                let capture = match fresh.id {
+                    Some(id) => capture::capture_ids(&[id], max_width)?,
+                    None => capture::capture_primary(max_width)?,
+                };
+                (capture, fresh.label)
+            }
+        },
+        None => (capture::capture_primary(max_width)?, target.label.clone()),
+    };
+    if !label.is_empty() {
+        capture.mode = label;
+    }
+    persist_captured(app, capture)
 }
 
 async fn run_blocking<T, F>(work: F) -> Result<T, String>
@@ -236,31 +243,34 @@ where
 
 pub fn prepare_hidden_overlay(app: &AppHandle) {
     apply_window_mode(app, false, true);
-    if let Some(window) = overlay(app) {
-        let _ = window.unminimize();
-        let _ = window.set_min_size(None::<LogicalSize<f64>>);
-        let _ = window.set_max_size(None::<LogicalSize<f64>>);
-        let _ = window.hide();
-    }
+    hide_overlay_window(app);
 }
 
 fn raise_overlay(app: &AppHandle) {
-    if let Some(window) = overlay(app) {
-        let _ = window.unminimize();
-        let expanded = app
-            .state::<AppState>()
-            .expanded
-            .lock()
-            .map(|guard| *guard)
-            .unwrap_or(false);
+    let was_hidden = overlay_is_hidden(app);
+    set_overlay_hidden(app, false);
+    let expanded = app
+        .state::<AppState>()
+        .expanded
+        .lock()
+        .map(|guard| *guard)
+        .unwrap_or(false);
+    let raise_app = app.clone();
+    run_on_main(app, move || {
+        let Some(window) = overlay(&raise_app) else {
+            return;
+        };
         let _ = window.set_skip_taskbar(!expanded);
         let _ = window.set_always_on_top(!expanded);
-        if !expanded {
+        let _ = window.unminimize();
+        if was_hidden {
+            pin_overlay_size(&window, 140.0);
             let _ = window.center();
         }
         let _ = window.show();
+        let _ = window.set_always_on_top(!expanded);
         let _ = window.set_focus();
-    }
+    });
 }
 
 pub fn show_settings(app: &AppHandle) {
@@ -296,10 +306,8 @@ fn recapture_memory(app: &AppHandle) -> Result<CapturePayload, String> {
         let max_width = settings.downscale_max_width;
         return recapture_pinned(app, pinned_target(app), max_width);
     }
-    with_overlay_hidden(app, || {
-        let capture = capture::capture(&settings)?;
-        persist_captured(app, capture)
-    })
+    let capture = capture::capture(&settings)?;
+    persist_captured(app, capture)
 }
 
 fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
@@ -335,10 +343,8 @@ pub async fn capture_displays(app: AppHandle, state: State<'_, AppState>, ids: V
     }
     let max_width = lock_settings(&state)?.downscale_max_width;
     run_blocking(move || {
-        with_overlay_hidden(&app, || {
-            let capture = capture::capture_ids(&ids, max_width)?;
-            persist_captured(&app, capture)
-        })
+        let capture = capture::capture_ids(&ids, max_width)?;
+        persist_captured(&app, capture)
     })
     .await
 }

@@ -28,6 +28,7 @@ futures-util = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 xcb = { version = "1.7", features = ["randr"] }
+zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 
 [profile.release]
 panic = "abort"
