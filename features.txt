@@ -29,7 +29,7 @@ APP LIFECYCLE
 
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 Starts in tray, no window            WORKED       UNTESTED     UNTESTED     UNTESTED
-Quit from tray exits process         UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Quit from tray exits process         WORKED       UNTESTED     UNTESTED     UNTESTED
 Close overlay hides, does not quit   WORKED       UNTESTED     UNTESTED     UNTESTED
 Second instance focuses overlay      UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Production bundle (.deb/.AppImage,
@@ -52,9 +52,9 @@ TRAY
 
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 Tray icon visible                    WORKED       UNTESTED     UNTESTED     UNTESTED
-Ask clAIre                           UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Ask clAIre                           WORKED       UNTESTED     UNTESTED     UNTESTED
 Settings                             UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Clear Context                        UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Clear Context                        WORKED       UNTESTED     UNTESTED     UNTESTED
 Left-click → menu (Linux)            WORKED       UNTESTED     N/A          N/A
 Left-click → Ask (macOS/Windows)     N/A          N/A          UNTESTED     UNTESTED
 
@@ -87,12 +87,12 @@ Feature                              Linux-X11    Linux-WL     macOS        Wind
 Compact ask bar on summon            WORKED       UNTESTED     UNTESTED     UNTESTED
 Always on top, skip taskbar          WORKED       UNTESTED     UNTESTED     UNTESTED
 Transparent frameless window         WORKED       UNTESTED     UNTESTED     UNTESTED
-Drag by titlebar                     UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Drag by titlebar                     WORKED       UNTESTED     UNTESTED     UNTESTED
 Esc hides (clears session)           WORKED       UNTESTED     UNTESTED     UNTESTED
 – hide button                        WORKED       UNTESTED     UNTESTED     UNTESTED
 Expand on Ask / Settings / Windows   WORKED       UNTESTED     UNTESTED     UNTESTED
 Window size follows content          WORKED       UNTESTED     UNTESTED     UNTESTED
-Enter sends, Shift+Enter newline     UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Enter sends, Shift+Enter newline     WORKED       UNTESTED     UNTESTED     UNTESTED
 Composer focus on summon             WORKED       UNTESTED     UNTESTED     UNTESTED
 Stay open after picking windows      WORKED       UNTESTED     UNTESTED     UNTESTED
 
@@ -138,9 +138,9 @@ Feature                              Linux-X11    Linux-WL     macOS        Wind
 List other windows (not only one)    WORKED       PARTIAL      UNTESTED     UNTESTED
 Select / deselect windows            WORKED       UNTESTED     UNTESTED     UNTESTED
 Capture selected set                 WORKED       UNTESTED     UNTESTED     UNTESTED
-Current window marked in list        UNTESTED     UNTESTED     UNTESTED     UNTESTED
-List updates as windows open/close   UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Closed windows drop from selection   UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Current window marked in list        WORKED       UNTESTED     UNTESTED     UNTESTED
+List updates as windows open/close   WORKED       UNTESTED     UNTESTED     UNTESTED
+Closed windows drop from selection   WORKED       UNTESTED     UNTESTED     UNTESTED
 
 Linux listing sources (test each compositor you care about)
 
@@ -164,24 +164,24 @@ CHAT / LLM
 
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 Ask with screenshot as vision        UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Streaming tokens in the log          UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Streaming tokens in the log          WORKED       UNTESTED     UNTESTED     UNTESTED
 Lite markdown in answers             UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Vision / web tags on last answer     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Follow-up keeps thread               UNTESTED     UNTESTED     UNTESTED     UNTESTED
-New chat starts a fresh thread       UNTESTED     UNTESTED     UNTESTED     UNTESTED
+New chat starts a fresh thread       WORKED       UNTESTED     UNTESTED     UNTESTED
 History limit sent with query        UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Empty query rejected                 UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Error banner on LLM failure          UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Screenshot attached to user turn     WORKED       UNTESTED     UNTESTED     UNTESTED
-Click shot opens preview             UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Esc closes preview                   UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Click shot opens preview             WORKED       UNTESTED     UNTESTED     UNTESTED
+Esc closes preview                   WORKED       UNTESTED     UNTESTED     UNTESTED
 
 Providers (network, not OS-specific — still record where you ran them)
 
   Provider       WORKED on     Notes
   OpenAI         UNTESTED
   Anthropic      UNTESTED
-  Gemini         UNTESTED
+  Gemini         WORKED
   Groq           UNTESTED
   OpenRouter     UNTESTED
   Mistral        UNTESTED
