@@ -2,8 +2,7 @@ use image::{imageops, RgbaImage};
 use serde::Serialize;
 use xcap::{Monitor, Window};
 
-use crate::settings::Settings;
-use crate::state::{encode_png, Capture};
+use crate::state::{encode_png, Capture, WindowShot};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +15,10 @@ pub struct DisplayInfo {
     pub height: u32,
     pub primary: bool,
     pub current: bool,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub title: String,
 }
 
 pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
@@ -48,6 +51,8 @@ fn xcap_list_windows() -> Result<Vec<DisplayInfo>, String> {
         out.push(DisplayInfo {
             id,
             name: window_label(window),
+            app: window.app_name().unwrap_or_default(),
+            title: window.title().unwrap_or_default(),
             x: window.x().unwrap_or(0),
             y: window.y().unwrap_or(0),
             width: window.width().unwrap_or(0),
@@ -79,21 +84,59 @@ fn merge_window_lists(mut primary: Vec<DisplayInfo>, extra: Vec<DisplayInfo>) ->
     primary
 }
 
-pub fn capture(settings: &Settings) -> Result<Capture, String> {
-    if !settings.capture_display_ids.is_empty() {
-        return capture_ids(&settings.capture_display_ids, settings.downscale_max_width);
-    }
-    let (image, label) = capture_current()?;
-    finish(image, &label, settings.downscale_max_width)
-}
-
 #[derive(Clone)]
 pub struct CurrentTarget {
     pub id: Option<u32>,
     pub label: String,
 }
 
+pub fn peek_active() -> CurrentTarget {
+    #[cfg(target_os = "linux")]
+    {
+        match linux_list_windows_inner(true) {
+            Ok(list) if !list.is_empty() => {
+                return target_from_info(list.into_iter().next().expect("non-empty"));
+            }
+            Ok(_) => {
+                return CurrentTarget {
+                    id: None,
+                    label: String::new(),
+                };
+            }
+            Err(_) => {
+                if let Some(item) = crate::linux_windows::peek_active() {
+                    return target_from_info(item);
+                }
+            }
+        }
+    }
+    let windows = Window::all().unwrap_or_default();
+    if let Some(window) = windows.iter().find(|window| {
+        window.is_focused().unwrap_or(false) && !is_ours(window)
+    }) {
+        return CurrentTarget {
+            id: window.id().ok().filter(|id| *id != 0),
+            label: window_label(window),
+        };
+    }
+    CurrentTarget {
+        id: None,
+        label: String::new(),
+    }
+}
+
+fn target_from_info(item: DisplayInfo) -> CurrentTarget {
+    CurrentTarget {
+        id: Some(item.id).filter(|id| *id != 0),
+        label: item.name,
+    }
+}
+
 pub fn current_target() -> CurrentTarget {
+    let peeked = peek_active();
+    if peeked.id.is_some() {
+        return peeked;
+    }
     if let Some(item) = list_windows_info()
         .ok()
         .and_then(|list| list.into_iter().find(|item| item.current))
@@ -116,8 +159,28 @@ pub fn current_target() -> CurrentTarget {
     }
 }
 
+pub fn target_for_id(id: u32) -> CurrentTarget {
+    if let Some(item) = list_windows_info()
+        .ok()
+        .and_then(|list| list.into_iter().find(|item| item.id == id))
+    {
+        return CurrentTarget {
+            id: Some(item.id).filter(|value| *value != 0),
+            label: item.name,
+        };
+    }
+    CurrentTarget {
+        id: Some(id).filter(|value| *value != 0),
+        label: format!("Window {id}"),
+    }
+}
+
 pub fn capture_primary(max_width: u32) -> Result<Capture, String> {
-    finish(capture_primary_monitor()?, "Primary screen", max_width)
+    finish(
+        capture_primary_monitor()?,
+        &[screen_shot(true)],
+        max_width,
+    )
 }
 
 pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
@@ -136,7 +199,7 @@ pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
     let mut errors = Vec::new();
     for id in unique {
         match capture_id(&windows, &monitors, id) {
-            Ok((label, image)) => tiles.push((0, 0, image, label)),
+            Ok((shot, image)) => tiles.push((0, 0, image, shot)),
             Err(err) => errors.push(err),
         }
     }
@@ -146,14 +209,10 @@ pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
             errors.join("; ")
         ));
     }
-    let label = if tiles.len() == 1 {
-        tiles[0].3.clone()
-    } else {
-        "selected windows".into()
-    };
+    let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.3.clone()).collect();
     finish(
         stitch_layout(tiles.into_iter().map(|(x, y, img, _)| (x, y, img)).collect()),
-        &label,
+        &shots,
         max_width,
     )
 }
@@ -162,44 +221,55 @@ fn capture_id(
     windows: &[Window],
     monitors: &[Monitor],
     id: u32,
-) -> Result<(String, RgbaImage), String> {
+) -> Result<(WindowShot, RgbaImage), String> {
     let listed = list_windows_info()
         .ok()
         .and_then(|list| list.into_iter().find(|item| item.id == id));
-    let label = || {
-        listed
-            .as_ref()
-            .map(|item| item.name.clone())
-            .unwrap_or_else(|| format!("Window {id}"))
-    };
+    let listed_shot = || shot_from_listed(&listed, id);
 
     #[cfg(target_os = "linux")]
     if let Some((x, y, width, height)) = crate::linux_windows::extra_rect(id) {
         if let Ok(image) = capture_rect(x, y, width, height) {
-            return Ok((label(), image));
+            return Ok((listed_shot(), image));
         }
     }
 
     #[cfg(target_os = "linux")]
     if let Ok(image) = linux_capture_window(id) {
-        return Ok((label(), image));
+        return Ok((listed_shot(), image));
     }
 
     if let Some(window) = windows.iter().find(|window| window.id().ok() == Some(id)) {
         if let Ok(image) = window.capture_image() {
-            return Ok((window_label(window), image));
+            return Ok((
+                WindowShot {
+                    app: window.app_name().unwrap_or_default(),
+                    title: window.title().unwrap_or_default(),
+                    focused: window.is_focused().unwrap_or(false)
+                        || listed.as_ref().is_some_and(|item| item.current),
+                },
+                image,
+            ));
         }
     }
 
     if let Some(info) = listed.as_ref() {
         if let Ok(image) = capture_rect(info.x, info.y, info.width, info.height) {
-            return Ok((info.name.clone(), image));
+            return Ok((shot_from_info(info), image));
         }
     }
 
     if let Some(monitor) = monitors.iter().find(|monitor| monitor.id().ok() == Some(id)) {
+        let title = monitor
+            .friendly_name()
+            .or_else(|_| monitor.name())
+            .unwrap_or_else(|_| "Display".into());
         return Ok((
-            monitor_label(monitor),
+            WindowShot {
+                app: "Screen".into(),
+                title,
+                focused: monitor.is_primary().unwrap_or(false),
+            },
             monitor.capture_image().map_err(|err| err.to_string())?,
         ));
     }
@@ -240,9 +310,14 @@ fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage, St
     Ok(imageops::crop_imm(&image, crop_x, crop_y, crop_w, crop_h).to_image())
 }
 
-fn finish(image: RgbaImage, mode: &str, max_width: u32) -> Result<Capture, String> {
+fn finish(image: RgbaImage, windows: &[WindowShot], max_width: u32) -> Result<Capture, String> {
     let mut capture = encode_png(downscale(image, max_width))?;
-    capture.mode = mode.into();
+    capture.windows = windows.to_vec();
+    capture.mode = match windows {
+        [one] => pretty_label(&one.app, &one.title),
+        [] => String::new(),
+        _ => "selected windows".into(),
+    };
     Ok(capture)
 }
 
@@ -252,18 +327,6 @@ fn downscale(img: RgbaImage, max_width: u32) -> RgbaImage {
     }
     let height = ((img.height() as f32) * (max_width as f32 / img.width() as f32)).round().max(1.0) as u32;
     imageops::resize(&img, max_width, height, imageops::FilterType::Triangle)
-}
-
-fn capture_current() -> Result<(RgbaImage, String), String> {
-    let target = current_target();
-    if let Some(id) = target.id {
-        let windows = Window::all().unwrap_or_default();
-        let monitors = Monitor::all().unwrap_or_default();
-        if let Ok((label, image)) = capture_id(&windows, &monitors, id) {
-            return Ok((image, label));
-        }
-    }
-    Ok((capture_primary_monitor()?, "Primary screen".into()))
 }
 
 fn pick_current(windows: &[Window]) -> Option<&Window> {
@@ -367,6 +430,37 @@ pub(crate) fn pretty_label(app: &str, title: &str) -> String {
     }
 }
 
+fn shot_from_listed(listed: &Option<DisplayInfo>, id: u32) -> WindowShot {
+    listed
+        .as_ref()
+        .map(shot_from_info)
+        .unwrap_or_else(|| WindowShot {
+            app: String::new(),
+            title: format!("Window {id}"),
+            focused: false,
+        })
+}
+
+fn shot_from_info(info: &DisplayInfo) -> WindowShot {
+    WindowShot {
+        app: info.app.clone(),
+        title: if info.title.trim().is_empty() {
+            info.name.clone()
+        } else {
+            info.title.clone()
+        },
+        focused: info.current,
+    }
+}
+
+fn screen_shot(focused: bool) -> WindowShot {
+    WindowShot {
+        app: "Screen".into(),
+        title: "Primary".into(),
+        focused,
+    }
+}
+
 fn list_monitors() -> Result<Vec<DisplayInfo>, String> {
     let monitors = Monitor::all().map_err(|err| err.to_string())?;
     let mut out = Vec::new();
@@ -375,6 +469,11 @@ fn list_monitors() -> Result<Vec<DisplayInfo>, String> {
         out.push(DisplayInfo {
             id,
             name: monitor_label(monitor),
+            app: "Screen".into(),
+            title: monitor
+                .friendly_name()
+                .or_else(|_| monitor.name())
+                .unwrap_or_else(|_| "Display".into()),
             x: monitor.x().unwrap_or(0),
             y: monitor.y().unwrap_or(0),
             width: monitor.width().unwrap_or(0),
@@ -639,11 +738,12 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
             continue;
         }
 
-        let name = pretty_label(&app, &title);
         let current = active_id == Some(id) && !linux_is_ours(&app, &title);
         out.push(DisplayInfo {
             id,
-            name,
+            name: pretty_label(&app, &title),
+            app,
+            title,
             x,
             y,
             width,

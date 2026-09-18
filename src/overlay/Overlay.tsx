@@ -62,6 +62,7 @@ export default function Overlay() {
   const selectedIdsRef = useRef<number[]>([]);
   const captureModeRef = useRef<CaptureMode>("current");
   const captureRef = useRef<CapturePayload | null>(null);
+  const pinWindowIdRef = useRef<number | null>(null);
   const pinToBottomRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const windowListBusy = useRef(false);
@@ -140,6 +141,7 @@ export default function Overlay() {
         captureModeRef.current = "current";
         selectedIdsRef.current = [];
         setSelectedIds([]);
+        pinWindowIdRef.current = null;
         void persistCaptureMode("current", []);
         captureStale.current = !latest;
       } catch (err) {
@@ -196,12 +198,19 @@ export default function Overlay() {
         captureModeRef.current = "current";
         selectedIdsRef.current = [];
         setSelectedIds([]);
+        pinWindowIdRef.current = null;
         setStayOpen(false);
         void persistCaptureMode("current", []);
         captureStale.current = true;
         setWindowLabel(label || "");
         beginCaptureWait();
         focusInput();
+      });
+      await add<{ label?: string; recapturing?: boolean }>("claire://target", (hint) => {
+        if (captureModeRef.current !== "current") return;
+        if (hint.label) setWindowLabel(hint.label);
+        captureStale.current = true;
+        if (hint.recapturing) beginCaptureWait();
       });
     })();
 
@@ -300,10 +309,20 @@ export default function Overlay() {
     setCaptureMode(next);
     window.clearTimeout(debounceRef.current);
     if (next === "current") {
+      const picked = selectedIdsRef.current;
+      if (picked.length === 1) {
+        pinWindowIdRef.current = picked[0];
+        const name = displays.find((display) => display.id === picked[0])?.name;
+        if (name) setWindowLabel(name);
+      }
       selectedIdsRef.current = [];
       setSelectedIds([]);
       captureStale.current = true;
+      captureRef.current = null;
+      setCapture(null);
+      setWindowLabel("");
       void persistCaptureMode("current", []);
+      void refreshCapture();
       return;
     }
     setStayOpen(true);
@@ -418,21 +437,17 @@ export default function Overlay() {
     setError(null);
     setUsedSearch(false);
     setUsedVision(false);
-    const attached = captureRef.current;
     setLog((current) => [
       ...current,
-      {
-        role: "user",
-        content: text,
-        image: attached?.dataUrl,
-        imageAlt: windowLabel || attached?.mode || "Captured window",
-      },
+      { role: "user", content: text },
       { role: "assistant", content: "" },
     ]);
     try {
-      if (capturingRef.current) {
-        await waitForInFlightCapture();
-      } else if (captureStale.current) {
+      if (capturingRef.current) await waitForInFlightCapture();
+      if (
+        captureStale.current ||
+        (captureModeRef.current === "current" && captureRef.current?.mode === "selected windows")
+      ) {
         await refreshCapture();
       }
       const attached = captureRef.current;
@@ -514,32 +529,42 @@ export default function Overlay() {
     }
   }
 
-  async function refreshCapture() {
-    window.clearTimeout(debounceRef.current);
-    const gen = ++captureGen.current;
-    beginCaptureWait();
-    try {
-      const ids = selectedIdsRef.current;
-      const payload =
-        captureModeRef.current === "all" && ids.length > 0
+  const refreshCapture = useCallback(
+    async (forceCurrent = false) => {
+      window.clearTimeout(debounceRef.current);
+      const gen = ++captureGen.current;
+      beginCaptureWait();
+      try {
+        const ids = selectedIdsRef.current;
+        const useAll = !forceCurrent && captureModeRef.current === "all" && ids.length > 0;
+        const pinId = useAll || forceCurrent ? undefined : pinWindowIdRef.current ?? undefined;
+        if (!useAll) pinWindowIdRef.current = null;
+        const payload = useAll
           ? await captureDisplays(ids)
-          : await recapture();
-      if (gen !== captureGen.current) return;
-      captureStale.current = false;
-      captureRef.current = payload;
-      setCapture(payload);
-      setWindowLabel(usableLabel(payload.mode));
-      setError(null);
-    } catch (err) {
-      if (gen === captureGen.current) setError(String(err));
-    } finally {
-      if (gen === captureGen.current) finishCaptureWait();
-    }
-  }
+          : await recapture(pinId, forceCurrent);
+        if (gen !== captureGen.current) return;
+        captureStale.current = false;
+        captureRef.current = payload;
+        setCapture(payload);
+        setWindowLabel(usableLabel(payload.mode));
+        setError(null);
+      } catch (err) {
+        if (gen === captureGen.current) setError(String(err));
+      } finally {
+        if (gen === captureGen.current) finishCaptureWait();
+      }
+    },
+    [beginCaptureWait, finishCaptureWait],
+  );
 
   function onToggleScreen(id: number) {
     const ids = selectedIdsRef.current;
-    const next = ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id];
+    const adding = !ids.includes(id);
+    const next = adding ? [...ids, id] : ids.filter((value) => value !== id);
+    if (adding) pinWindowIdRef.current = id;
+    else if (pinWindowIdRef.current === id) {
+      pinWindowIdRef.current = next.length === 1 ? next[0] : null;
+    }
     selectedIdsRef.current = next;
     setSelectedIds(next);
     captureModeRef.current = "all";
@@ -764,14 +789,15 @@ export default function Overlay() {
             ref={inputRef}
             value={query}
             placeholder={
-              continuing
-                ? "Ask a follow-up in this chat…"
-                : capture
-                  ? "Start a new chat about this window…"
-                  : "Start a new chat…"
+              busy
+                ? "Type the next message while clAIre answers…"
+                : continuing
+                  ? "Ask a follow-up in this chat…"
+                  : capture
+                    ? "Start a new chat about this window…"
+                    : "Start a new chat…"
             }
             rows={expanded ? 2 : 1}
-            disabled={busy}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -784,9 +810,11 @@ export default function Overlay() {
             className="primary send"
             type="button"
             disabled={busy || !query.trim()}
+            title="Send with Enter"
+            aria-label="Enter, send message"
             onClick={() => void submit()}
           >
-            {busy ? "…" : continuing ? "Continue" : "Ask"}
+            {busy ? "…" : "Enter"}
           </button>
         </div>
         </div>
@@ -808,8 +836,8 @@ export default function Overlay() {
           </span>
           <span>
             {continuing
-              ? "Continue sends a follow-up · New chat starts over"
-              : "Ask starts a new chat · Esc hides"}
+              ? "Enter sends a follow-up · New chat starts over"
+              : "Enter sends · Esc hides"}
           </span>
         </div>
           </>

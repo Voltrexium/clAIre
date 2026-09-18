@@ -7,6 +7,13 @@ use serde::Serialize;
 
 use crate::settings::Settings;
 
+#[derive(Debug, Clone)]
+pub struct WindowShot {
+    pub app: String,
+    pub title: String,
+    pub focused: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapturePayload {
@@ -24,6 +31,7 @@ pub struct Capture {
     pub height: u32,
     pub captured_at: String,
     pub mode: String,
+    pub windows: Vec<WindowShot>,
 }
 
 impl Capture {
@@ -67,6 +75,7 @@ pub struct AppState {
     pub context_gate: tokio::sync::Mutex<()>,
     pub expanded: Mutex<bool>,
     pub overlay_hidden: Mutex<bool>,
+    pub watch_gen: std::sync::atomic::AtomicU64,
 }
 
 impl Default for AppState {
@@ -79,6 +88,7 @@ impl Default for AppState {
             context_gate: tokio::sync::Mutex::new(()),
             expanded: Mutex::new(false),
             overlay_hidden: Mutex::new(true),
+            watch_gen: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -101,5 +111,6 @@ pub fn encode_png(img: image::RgbaImage) -> Result<Capture, String> {
         height,
         captured_at: chrono::Local::now().to_rfc3339(),
         mode: String::new(),
+        windows: Vec::new(),
     })
 }

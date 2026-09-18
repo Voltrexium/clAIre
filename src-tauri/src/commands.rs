@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow};
 
@@ -24,6 +26,14 @@ pub struct StorageInfo {
     pub settings_path: String,
     pub context_dir: String,
     pub history_count: usize,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct TargetHint {
+    id: Option<u32>,
+    label: String,
+    recapturing: bool,
 }
 
 fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
@@ -145,6 +155,94 @@ fn pin_current(app: &AppHandle, target: &capture::CurrentTarget) {
     }
 }
 
+fn emit_target(app: &AppHandle, target: &capture::CurrentTarget, recapturing: bool) {
+    if target.label.is_empty() {
+        return;
+    }
+    let _ = app.emit(
+        "claire://target",
+        TargetHint {
+            id: target.id,
+            label: target.label.clone(),
+            recapturing,
+        },
+    );
+}
+
+fn bump_watch_gen(app: &AppHandle) -> u64 {
+    app.state::<AppState>()
+        .watch_gen
+        .fetch_add(1, Ordering::SeqCst)
+        + 1
+}
+
+pub fn start_active_watch(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            if overlay_hidden(&app) {
+                continue;
+            }
+            let current_mode = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .ok()
+                .is_some_and(|settings| settings.capture_mode == CaptureMode::Current);
+            if !current_mode {
+                continue;
+            }
+            let Ok(peek) = run_blocking(|| Ok(capture::peek_active())).await else {
+                continue;
+            };
+            if peek.id.is_none() {
+                continue;
+            }
+            let pin = app
+                .state::<AppState>()
+                .pinned_current
+                .lock()
+                .ok()
+                .and_then(|guard| guard.clone());
+            let same_id = pin.as_ref().is_some_and(|(id, _)| *id == peek.id);
+            let same_label = pin.as_ref().is_some_and(|(_, label)| label == &peek.label);
+            if same_id && same_label {
+                continue;
+            }
+            pin_current(&app, &peek);
+            emit_target(&app, &peek, !same_id);
+            if same_id {
+                continue;
+            }
+            let gen = bump_watch_gen(&app);
+            let max_width = app
+                .state::<AppState>()
+                .settings
+                .lock()
+                .map(|settings| settings.downscale_max_width)
+                .unwrap_or(1280);
+            let work_app = app.clone();
+            let target = peek.clone();
+            tauri::async_runtime::spawn(async move {
+                let shot_app = work_app.clone();
+                let result =
+                    run_blocking(move || recapture_pinned(&shot_app, target, max_width)).await;
+                if work_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        let _ = work_app.emit("claire://capture", payload);
+                    }
+                    Err(err) => {
+                        let _ = work_app.emit("claire://error", err);
+                    }
+                }
+            });
+        }
+    });
+}
+
 fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
     if let Ok(pin) = app.state::<AppState>().pinned_current.lock() {
         if let Some((id, label)) = pin.clone() {
@@ -200,12 +298,32 @@ fn recapture_pinned(
     persist_captured(app, capture)
 }
 
-fn recapture_memory(app: &AppHandle) -> Result<CapturePayload, String> {
-    let settings = lock_settings(&app.state::<AppState>())?;
-    if settings.capture_mode == CaptureMode::Current || settings.capture_display_ids.is_empty() {
-        return recapture_pinned(app, pinned_target(app), settings.downscale_max_width);
-    }
-    persist_captured(app, capture::capture(&settings)?)
+fn recapture_memory(
+    app: &AppHandle,
+    window_id: Option<u32>,
+    force_current: bool,
+) -> Result<CapturePayload, String> {
+    let max_width = lock_settings(&app.state::<AppState>())?.downscale_max_width;
+    let target = if force_current {
+        let target = capture::peek_active();
+        if target.id.is_some() {
+            pin_current(app, &target);
+            emit_target(app, &target, true);
+            target
+        } else {
+            pinned_target(app)
+        }
+    } else {
+        match window_id {
+            Some(id) => {
+                let target = capture::target_for_id(id);
+                pin_current(app, &target);
+                target
+            }
+            None => pinned_target(app),
+        }
+    };
+    recapture_pinned(app, target, max_width)
 }
 
 fn recapture_then_show(app: &AppHandle) {
@@ -215,6 +333,32 @@ fn recapture_then_show(app: &AppHandle) {
         .lock()
         .map(|settings| settings.downscale_max_width)
         .unwrap_or(1280);
+    let peeked = capture::peek_active();
+    if peeked.id.is_some() {
+        pin_current(app, &peeked);
+        emit_target(app, &peeked, true);
+        let _ = app.emit("claire://summoned", peeked.label.clone());
+        set_expanded(app, false);
+        raise_overlay(app);
+        let gen = bump_watch_gen(app);
+        let capture_app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let work_app = capture_app.clone();
+            let result = run_blocking(move || recapture_pinned(&work_app, peeked, max_width)).await;
+            if capture_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
+                return;
+            }
+            match result {
+                Ok(payload) => {
+                    let _ = capture_app.emit("claire://capture", payload);
+                }
+                Err(err) => {
+                    let _ = capture_app.emit("claire://error", err);
+                }
+            }
+        });
+        return;
+    }
     let label = app
         .state::<AppState>()
         .pinned_current
@@ -225,16 +369,21 @@ fn recapture_then_show(app: &AppHandle) {
     let _ = app.emit("claire://summoned", label);
     set_expanded(app, false);
     raise_overlay(app);
+    let gen = bump_watch_gen(app);
     let capture_app = app.clone();
     tauri::async_runtime::spawn(async move {
         let work_app = capture_app.clone();
         let result = run_blocking(move || {
             let target = capture::current_target();
             pin_current(&work_app, &target);
+            emit_target(&work_app, &target, true);
             let _ = work_app.emit("claire://summoned", target.label.clone());
             recapture_pinned(&work_app, target, max_width)
         })
         .await;
+        if capture_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
+            return;
+        }
         match result {
             Ok(payload) => {
                 let _ = capture_app.emit("claire://capture", payload);
@@ -427,8 +576,13 @@ pub fn set_capture_mode(
 }
 
 #[tauri::command]
-pub async fn recapture(app: AppHandle) -> Result<CapturePayload, String> {
-    run_blocking(move || recapture_memory(&app)).await
+pub async fn recapture(
+    app: AppHandle,
+    window_id: Option<u32>,
+    force_current: Option<bool>,
+) -> Result<CapturePayload, String> {
+    let force_current = force_current.unwrap_or(false);
+    run_blocking(move || recapture_memory(&app, window_id, force_current)).await
 }
 
 #[tauri::command]
@@ -470,7 +624,7 @@ pub async fn ask_claire(
         return Err("Query is empty".into());
     }
 
-    let (settings, history, thread_context, png, epoch) = {
+    let (settings, history, thread_context, png, windows, epoch) = {
         let state = app.state::<AppState>();
         let settings = lock_settings(&state)?;
         let session = state.session.lock().map_err(|err| err.to_string())?;
@@ -485,13 +639,11 @@ pub async fn ask_claire(
         } else {
             None
         };
-        let png = state
-            .latest_capture
-            .lock()
-            .map_err(|err| err.to_string())?
-            .as_ref()
-            .map(|capture| capture.png.clone());
-        (settings, history, thread_context, png, session.epoch)
+        let (png, windows) = match state.latest_capture.lock().map_err(|err| err.to_string())?.as_ref() {
+            Some(capture) => (Some(capture.png.clone()), capture.windows.clone()),
+            None => (None, Vec::new()),
+        };
+        (settings, history, thread_context, png, windows, session.epoch)
     };
 
     let want_search = include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
@@ -518,6 +670,7 @@ pub async fn ask_claire(
         thread_context.as_deref(),
         &query,
         png.as_deref(),
+        &windows,
         search_block.as_deref(),
     )
     .await

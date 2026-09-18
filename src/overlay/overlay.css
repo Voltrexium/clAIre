@@ -52,7 +52,7 @@ body,
 }
 
 .overlay-card.compact .send {
-  min-width: 56px;
+  min-width: 72px;
   height: 40px;
 }
 
@@ -201,8 +201,13 @@ body,
 .meta,
 .window-panel-head {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: var(--gap);
+}
+
+.meta,
+.window-panel-head {
+  align-items: center;
 }
 
 .composer-block {
@@ -310,7 +315,30 @@ body,
 }
 
 .send {
-  min-width: 72px;
+  min-width: 88px;
+  height: auto;
+  min-height: var(--control-h);
+  padding: 0 16px;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--accent);
+  color: var(--on-accent);
+  border: 1px solid var(--accent-strong);
+  box-shadow: 0 3px 0 #6d4cae;
+}
+
+.send:hover:not(:disabled) {
+  background: var(--accent-strong);
+  box-shadow: 0 2px 0 #6d4cae;
+  transform: translateY(1px);
+}
+
+.send:disabled {
+  opacity: 0.38;
+  cursor: default;
+  box-shadow: none;
 }
 
 .meta {

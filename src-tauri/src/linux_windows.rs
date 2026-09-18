@@ -22,12 +22,58 @@ pub fn list_extra() -> Vec<DisplayInfo> {
     if let Ok(mut rects) = extra_rects().lock() {
         rects.clear();
         for item in &out {
-            if item.width > 0 && item.height > 0 {
-                rects.insert(item.id, (item.x, item.y, item.width, item.height));
-            }
+            remember_rect(&mut rects, item);
         }
     }
     out
+}
+
+pub fn peek_active() -> Option<DisplayInfo> {
+    let item = hypr_active().or_else(niri_focused)?;
+    if let Ok(mut rects) = extra_rects().lock() {
+        remember_rect(&mut rects, &item);
+    }
+    Some(item)
+}
+
+fn remember_rect(rects: &mut HashMap<u32, (i32, i32, u32, u32)>, item: &DisplayInfo) {
+    if item.width > 0 && item.height > 0 {
+        rects.insert(item.id, (item.x, item.y, item.width, item.height));
+    }
+}
+
+fn from_json_window(
+    app: &str,
+    title: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    current: bool,
+) -> Option<DisplayInfo> {
+    let mut out = Vec::new();
+    push_window(&mut out, app, title, x, y, width, height, current);
+    out.into_iter().next()
+}
+
+fn hypr_active() -> Option<DisplayInfo> {
+    let raw = Command::new("hyprctl")
+        .args(["activewindow", "-j"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let row: serde_json::Value = serde_json::from_slice(&raw.stdout).ok()?;
+    hypr_row(&row, true)
+}
+
+fn niri_focused() -> Option<DisplayInfo> {
+    let raw = Command::new("niri")
+        .args(["msg", "-j", "focused-window"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let row: serde_json::Value = serde_json::from_slice(&raw.stdout).ok()?;
+    niri_row(&row, true)
 }
 
 fn merge(out: &mut Vec<DisplayInfo>, extra: Vec<DisplayInfo>) {
@@ -115,6 +161,8 @@ fn push_window(
     out.push(DisplayInfo {
         id: remember_id(&name, x, y, width, height),
         name,
+        app: app.to_string(),
+        title: title.to_string(),
         x,
         y,
         width,
@@ -295,33 +343,40 @@ fn hypr_windows() -> Vec<DisplayInfo> {
     };
     let mut out = Vec::new();
     for row in rows {
-        if row.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false)
-            || !row.get("mapped").and_then(|v| v.as_bool()).unwrap_or(true)
-        {
-            continue;
+        if let Some(item) = hypr_row(
+            &row,
+            row.get("focusHistoryID")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(-1)
+                == 0,
+        ) {
+            out.push(item);
         }
-        let app = row
-            .get("class")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let title = row
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
-        let at = row.get("at").and_then(|v| v.as_array());
-        let size = row.get("size").and_then(|v| v.as_array());
-        let x = at.and_then(|v| v.first()).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let y = at.and_then(|v| v.get(1)).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-        let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let current = row
-            .get("focusHistoryID")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(-1)
-            == 0;
-        push_window(&mut out, app, title, x, y, width, height, current);
     }
     out
+}
+
+fn hypr_row(row: &serde_json::Value, current: bool) -> Option<DisplayInfo> {
+    if row.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false)
+        || !row.get("mapped").and_then(|v| v.as_bool()).unwrap_or(true)
+    {
+        return None;
+    }
+    let app = row
+        .get("class")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let title = row
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let at = row.get("at").and_then(|v| v.as_array());
+    let size = row.get("size").and_then(|v| v.as_array());
+    let x = at.and_then(|v| v.first()).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let y = at.and_then(|v| v.get(1)).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+    let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    from_json_window(app, title, x, y, width, height, current)
 }
 
 fn sway_windows() -> Vec<DisplayInfo> {
@@ -411,27 +466,27 @@ fn niri_windows() -> Vec<DisplayInfo> {
     };
     let mut out = Vec::new();
     for row in rows {
-        let app = row.get("app_id").and_then(|v| v.as_str()).unwrap_or_default();
-        let title = row.get("title").and_then(|v| v.as_str()).unwrap_or_default();
-        let layout = row.get("layout");
-        let size = layout.and_then(|v| v.get("window_size")).and_then(|v| v.as_array());
-        let pos = layout
-            .and_then(|v| v.get("tile_pos_in_workspace_view"))
-            .and_then(|v| v.as_array());
-        let x = pos.and_then(|v| v.first()).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-        let y = pos.and_then(|v| v.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-        let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        push_window(
-            &mut out,
-            app,
-            title,
-            x,
-            y,
-            width,
-            height,
+        if let Some(item) = niri_row(
+            &row,
             row.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false),
-        );
+        ) {
+            out.push(item);
+        }
     }
     out
+}
+
+fn niri_row(row: &serde_json::Value, current: bool) -> Option<DisplayInfo> {
+    let app = row.get("app_id").and_then(|v| v.as_str()).unwrap_or_default();
+    let title = row.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+    let layout = row.get("layout");
+    let size = layout.and_then(|v| v.get("window_size")).and_then(|v| v.as_array());
+    let pos = layout
+        .and_then(|v| v.get("tile_pos_in_workspace_view"))
+        .and_then(|v| v.as_array());
+    let x = pos.and_then(|v| v.first()).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+    let y = pos.and_then(|v| v.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
+    let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    from_json_window(app, title, x, y, width, height, current)
 }

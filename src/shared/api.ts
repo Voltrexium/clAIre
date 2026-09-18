@@ -45,8 +45,11 @@ export function storageInfo() {
   return invoke<StorageInfo>("storage_info");
 }
 
-export function recapture() {
-  return invoke<CapturePayload>("recapture");
+export function recapture(windowId?: number, forceCurrent = false) {
+  return invoke<CapturePayload>("recapture", {
+    windowId: windowId ?? null,
+    forceCurrent,
+  });
 }
 
 export function listDisplays() {

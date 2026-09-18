@@ -6,6 +6,7 @@ mod hotkey;
 mod llm;
 mod search;
 mod settings;
+mod specs;
 mod state;
 mod storage;
 mod tray;
@@ -38,6 +39,7 @@ pub fn run() {
                 eprintln!("clAIre hotkey: {err}");
             }
             commands::prepare_hidden_overlay(&handle);
+            commands::start_active_watch(handle.clone());
             Ok(())
         })
         .on_window_event(|window, event| {

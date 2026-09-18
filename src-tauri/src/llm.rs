@@ -2,7 +2,7 @@ use base64::Engine;
 use tauri::{AppHandle, Emitter};
 
 use crate::settings::{Provider, Settings};
-use crate::state::ChatMessage;
+use crate::state::{ChatMessage, WindowShot};
 
 pub struct LlmResult {
     pub answer: String,
@@ -16,11 +16,15 @@ pub async fn complete(
     thread_context: Option<&str>,
     query: &str,
     image_png: Option<&[u8]>,
+    windows: &[WindowShot],
     search_block: Option<&str>,
 ) -> Result<LlmResult, String> {
     let mut inner = query.to_string();
     if let Some(search) = search_block {
-        inner = format!("<search_results>\n{search}\n</search_results>\n\n{query}");
+        inner = format!("<search_results>\n{search}\n</search_results>\n\n{inner}");
+    }
+    if image_png.is_some() && !windows.is_empty() {
+        inner = format!("{}\n\n{inner}", windows_xml(windows));
     }
     let user_text = xml_message("user", "claire", &inner);
     let history = tagged_history(history);
@@ -44,6 +48,29 @@ fn xml_message(sender: &str, recipient: &str, body: &str) -> String {
     format!("<message sender=\"{sender}\" recipient=\"{recipient}\">\n{body}\n</message>")
 }
 
+fn xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn windows_xml(windows: &[WindowShot]) -> String {
+    let mut out = String::from("<windows>");
+    for (index, window) in windows.iter().enumerate() {
+        out.push_str(&format!(
+            "\n  <window index=\"{}\" app=\"{}\" title=\"{}\" focused=\"{}\"/>",
+            index + 1,
+            xml_attr(window.app.trim()),
+            xml_attr(window.title.trim()),
+            if window.focused { "true" } else { "false" }
+        ));
+    }
+    out.push_str("\n</windows>");
+    out
+}
+
 fn tagged_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
     history
         .iter()
@@ -65,11 +92,12 @@ fn tagged_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
 fn with_xml_instructions(settings: &Settings, thread_context: Option<&str>) -> Settings {
     let mut next = settings.clone();
     let mut prompt = format!(
-        "{}\n\nConversation turns are XML messages with sender and recipient attributes.\n\
+        "{}\n\n{}\n\nConversation turns are XML messages with sender and recipient attributes.\n\
          User messages: <message sender=\"user\" recipient=\"claire\">…</message>\n\
          Your replies: <message sender=\"claire\" recipient=\"user\">…</message>\n\
          Use earlier <message> turns and any <thread_context> as precursor. Reply with the answer text only — do not wrap your reply in XML.",
-        settings.system_prompt.trim()
+        settings.system_prompt.trim(),
+        crate::specs::xml_block()
     );
     if let Some(ctx) = thread_context.filter(|value| !value.trim().is_empty()) {
         prompt.push_str(&format!(
