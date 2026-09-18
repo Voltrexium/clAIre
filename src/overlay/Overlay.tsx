@@ -87,20 +87,27 @@ export default function Overlay() {
   const finishCaptureWait = useCallback(() => {
     capturingRef.current = false;
     setCapturing(false);
-    const waiters = captureWaiters.current.splice(0);
-    waiters.forEach((resolve) => resolve());
+    captureWaiters.current.splice(0).forEach((resolve) => resolve());
   }, []);
 
   const waitForInFlightCapture = useCallback(() => {
     if (!capturingRef.current) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      captureWaiters.current.push(resolve);
-    });
+    return new Promise<void>((resolve) => captureWaiters.current.push(resolve));
   }, []);
 
   const beginCaptureWait = useCallback(() => {
     capturingRef.current = true;
     setCapturing(true);
+  }, []);
+
+  const resetAsk = useCallback(() => {
+    setLog([]);
+    setQuery("");
+    setError(null);
+    setBusy(false);
+    setConfirmClear(false);
+    setUsedSearch(false);
+    setUsedVision(false);
   }, []);
 
   function startDrag(event: React.MouseEvent) {
@@ -173,37 +180,18 @@ export default function Overlay() {
         captureRef.current = null;
         setCapture(null);
         setWindowLabel("");
-        setLog([]);
-        setQuery("");
-        setError(null);
-        setConfirmClear(false);
+        resetAsk();
         setPreview(null);
-        setUsedSearch(false);
-        setUsedVision(false);
       });
-      await add("claire://chat-cleared", () => {
-        setLog([]);
-        setQuery("");
-        setError(null);
-        setBusy(false);
-        setConfirmClear(false);
-        setUsedSearch(false);
-        setUsedVision(false);
-      });
+      await add("claire://chat-cleared", () => resetAsk());
       await add("claire://settings", () => {
         openSettingsView();
         focusInput();
       });
       await add<string>("claire://summoned", (label) => {
         closeSettings();
-        setQuery("");
-        setLog([]);
-        setError(null);
-        setBusy(false);
-        setConfirmClear(false);
+        resetAsk();
         setPreview(null);
-        setUsedSearch(false);
-        setUsedVision(false);
         setCaptureMode("current");
         captureModeRef.current = "current";
         selectedIdsRef.current = [];
@@ -242,7 +230,7 @@ export default function Overlay() {
       window.removeEventListener("keydown", onKey);
       window.clearTimeout(debounceRef.current);
     };
-  }, [beginCaptureWait, closeSettings, finishCaptureWait, focusInput, openSettingsView]);
+  }, [beginCaptureWait, closeSettings, finishCaptureWait, focusInput, openSettingsView, resetAsk]);
 
   function openPreview(src: string, alt: string) {
     const next = { src, alt };
@@ -761,21 +749,16 @@ export default function Overlay() {
         <div className={continuing ? "composer-block continuing" : "composer-block fresh"}>
           <div className="thread-bar">
             {continuing ? (
-              <>
-                <span className="thread-status continue">Continuing this chat</span>
-                <button
-                  className="ghost"
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void startNewChat()}
-                >
-                  New chat
-                </button>
-              </>
-            ) : (
-              <span className="thread-status fresh">New chat</span>
-            )}
-          </div>
+            <>
+              <span className="thread-status continue">Continuing this chat</span>
+              <button className="ghost" type="button" disabled={busy} onClick={() => void startNewChat()}>
+                New chat
+              </button>
+            </>
+          ) : (
+            <span className="thread-status fresh">New chat</span>
+          )}
+        </div>
         <div className="composer">
           <textarea
             ref={inputRef}
@@ -797,25 +780,14 @@ export default function Overlay() {
               }
             }}
           />
-          {continuing ? (
-            <button
-              className="primary send"
-              type="button"
-              disabled={busy || !query.trim()}
-              onClick={() => void submit()}
-            >
-              {busy ? "…" : "Continue"}
-            </button>
-          ) : (
-            <button
-              className="primary send"
-              type="button"
-              disabled={busy || !query.trim()}
-              onClick={() => void submit()}
-            >
-              {busy ? "…" : "Ask"}
-            </button>
-          )}
+          <button
+            className="primary send"
+            type="button"
+            disabled={busy || !query.trim()}
+            onClick={() => void submit()}
+          >
+            {busy ? "…" : continuing ? "Continue" : "Ask"}
+          </button>
         </div>
         </div>
 
@@ -837,9 +809,7 @@ export default function Overlay() {
           <span>
             {continuing
               ? "Continue sends a follow-up · New chat starts over"
-              : expanded
-                ? "Ask starts a new chat · Esc hides"
-                : "Ask starts a new chat · Esc hides"}
+              : "Ask starts a new chat · Esc hides"}
           </span>
         </div>
           </>

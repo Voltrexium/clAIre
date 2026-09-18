@@ -339,39 +339,12 @@ fn is_our_overlay(app: &str, title: &str) -> bool {
 }
 
 fn is_shell(window: &Window) -> bool {
-    let app = window.app_name().unwrap_or_default().to_lowercase();
-    let title = window.title().unwrap_or_default().to_lowercase();
-    let width = window.width().unwrap_or(0);
-    let height = window.height().unwrap_or(0);
-    if height > 0 && height <= 40 && width >= height.saturating_mul(8) {
-        return true;
-    }
-    const NAMES: &[&str] = &[
-        "nemo-desktop",
-        "xfdesktop",
-        "xfce4-panel",
-        "gnome-shell",
-        "plasmashell",
-        "polybar",
-        "waybar",
-        "plank",
-    ];
-    #[cfg(target_os = "macos")]
-    const EXTRA: &[&str] = &["dock", "windowserver", "control center", "notification center"];
-    #[cfg(target_os = "windows")]
-    const EXTRA: &[&str] = &[
-        "textinputhost",
-        "searchhost",
-        "startmenuexperiencehost",
-        "windows input experience",
-        "dwm",
-    ];
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    const EXTRA: &[&str] = &[];
-    NAMES
-        .iter()
-        .chain(EXTRA)
-        .any(|name| app == *name || title == *name)
+    linux_is_shell(
+        &window.app_name().unwrap_or_default(),
+        &window.title().unwrap_or_default(),
+        window.width().unwrap_or(0),
+        window.height().unwrap_or(0),
+    )
 }
 
 fn window_label(window: &Window) -> String {
@@ -682,12 +655,10 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     Ok(out)
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn linux_is_ours(app: &str, title: &str) -> bool {
     is_our_overlay(app, title)
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn linux_is_shell(app: &str, title: &str, width: u32, height: u32) -> bool {
     let app = app.to_lowercase();
     let title = title.to_lowercase();
@@ -704,6 +675,24 @@ pub(crate) fn linux_is_shell(app: &str, title: &str, width: u32, height: u32) ->
         "waybar",
         "plank",
         "cinnamon",
+        #[cfg(target_os = "macos")]
+        "dock",
+        #[cfg(target_os = "macos")]
+        "windowserver",
+        #[cfg(target_os = "macos")]
+        "control center",
+        #[cfg(target_os = "macos")]
+        "notification center",
+        #[cfg(target_os = "windows")]
+        "textinputhost",
+        #[cfg(target_os = "windows")]
+        "searchhost",
+        #[cfg(target_os = "windows")]
+        "startmenuexperiencehost",
+        #[cfg(target_os = "windows")]
+        "windows input experience",
+        #[cfg(target_os = "windows")]
+        "dwm",
     ];
     NAMES
         .iter()

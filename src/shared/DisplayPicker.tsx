@@ -16,16 +16,19 @@ export default function DisplayPicker({
   const selected = displays.filter((display) => selectedIds.includes(display.id));
   const available = displays.filter((display) => !selectedIds.includes(display.id));
 
-  return (
-    <div className="window-picker">
-      {selected.length > 0 && (
-        <ul className="window-list selected">
-          {selected.map((display) => (
-            <li key={`${display.id}-${display.name}-${display.x}-${display.y}`} className="window-row on">
-              <button type="button" className="name" onClick={() => onToggle(display.id)}>
-                {display.name}
-                {display.current ? " · current" : ""}
-              </button>
+  function list(items: DisplayInfo[], selectedList: boolean) {
+    return (
+      <ul className={selectedList ? "window-list selected" : "window-list available"}>
+        {items.map((display) => (
+          <li
+            key={`${display.id}-${display.name}-${display.x}-${display.y}`}
+            className={selectedList ? "window-row on" : "window-row"}
+          >
+            <button type="button" className="name" onClick={() => onToggle(display.id)}>
+              {display.name}
+              {display.current ? " · current" : ""}
+            </button>
+            {selectedList && (
               <button
                 type="button"
                 className="remove"
@@ -34,22 +37,17 @@ export default function DisplayPicker({
               >
                 ×
               </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {available.length > 0 && (
-        <ul className="window-list available">
-          {available.map((display) => (
-            <li key={`${display.id}-${display.name}-${display.x}-${display.y}`} className="window-row">
-              <button type="button" className="name" onClick={() => onToggle(display.id)}>
-                {display.name}
-                {display.current ? " · current" : ""}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  return (
+    <div className="window-picker">
+      {selected.length > 0 && list(selected, true)}
+      {available.length > 0 && list(available, false)}
     </div>
   );
 }

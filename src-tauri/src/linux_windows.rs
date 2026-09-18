@@ -98,6 +98,32 @@ fn skip(app: &str, title: &str, width: u32, height: u32) -> bool {
     crate::capture::linux_is_ours(app, title) || crate::capture::linux_is_shell(app, title, width, height)
 }
 
+fn push_window(
+    out: &mut Vec<DisplayInfo>,
+    app: &str,
+    title: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    current: bool,
+) {
+    if skip(app, title, width, height) {
+        return;
+    }
+    let name = crate::capture::pretty_label(app, title);
+    out.push(DisplayInfo {
+        id: remember_id(&name, x, y, width, height),
+        name,
+        x,
+        y,
+        width,
+        height,
+        primary: current,
+        current,
+    });
+}
+
 fn atspi_windows() -> Vec<DisplayInfo> {
     atspi_windows_inner().unwrap_or_default()
 }
@@ -142,21 +168,16 @@ fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
             if width > 0 && height > 0 && (width < 32 || height < 32) {
                 continue;
             }
-            if skip(&app, &title, width, height) {
-                continue;
-            }
-            let name = crate::capture::pretty_label(&app, &title);
-            let current = is_active(&atspi, &bus, path.as_str());
-            out.push(DisplayInfo {
-                id: remember_id(&name, x, y, width, height),
-                name,
+            push_window(
+                &mut out,
+                &app,
+                &title,
                 x,
                 y,
                 width,
                 height,
-                primary: current,
-                current,
-            });
+                is_active(&atspi, &bus, path.as_str()),
+            );
         }
     }
     Ok(out)
@@ -293,25 +314,12 @@ fn hypr_windows() -> Vec<DisplayInfo> {
         let y = at.and_then(|v| v.get(1)).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
         let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        if skip(app, title, width, height) {
-            continue;
-        }
         let current = row
             .get("focusHistoryID")
             .and_then(|v| v.as_i64())
             .unwrap_or(-1)
             == 0;
-        let name = crate::capture::pretty_label(app, title);
-        out.push(DisplayInfo {
-            id: remember_id(&name, x, y, width, height),
-            name,
-            x,
-            y,
-            width,
-            height,
-            primary: current,
-            current,
-        });
+        push_window(&mut out, app, title, x, y, width, height, current);
     }
     out
 }
@@ -365,19 +373,17 @@ fn walk_sway(node: &serde_json::Value, out: &mut Vec<DisplayInfo>) {
             .and_then(|v| v.as_array())
             .map(|v| v.is_empty())
             .unwrap_or(true);
-    if is_leaf && (!app.is_empty() || node.get("pid").is_some()) && !skip(app, title, width, height) {
-        let current = node.get("focused").and_then(|v| v.as_bool()).unwrap_or(false);
-        let name = crate::capture::pretty_label(app, title);
-        out.push(DisplayInfo {
-            id: remember_id(&name, x, y, width, height),
-            name,
+    if is_leaf && (!app.is_empty() || node.get("pid").is_some()) {
+        push_window(
+            out,
+            app,
+            title,
             x,
             y,
             width,
             height,
-            primary: current,
-            current,
-        });
+            node.get("focused").and_then(|v| v.as_bool()).unwrap_or(false),
+        );
     }
     if let Some(kids) = node.get("nodes").and_then(|v| v.as_array()) {
         for kid in kids {
@@ -416,21 +422,16 @@ fn niri_windows() -> Vec<DisplayInfo> {
         let y = pos.and_then(|v| v.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
         let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
         let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-        if skip(app, title, width, height) {
-            continue;
-        }
-        let current = row.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false);
-        let name = crate::capture::pretty_label(app, title);
-        out.push(DisplayInfo {
-            id: remember_id(&name, x, y, width, height),
-            name,
+        push_window(
+            &mut out,
+            app,
+            title,
             x,
             y,
             width,
             height,
-            primary: current,
-            current,
-        });
+            row.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false),
+        );
     }
     out
 }

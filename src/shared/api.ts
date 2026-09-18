@@ -37,10 +37,6 @@ export function fitOverlay(width: number, height: number) {
   return invoke<void>("fit_overlay", { width, height });
 }
 
-export function openSettings() {
-  return invoke<void>("open_settings");
-}
-
 export function openStorageFolder() {
   return invoke<void>("open_storage_folder");
 }

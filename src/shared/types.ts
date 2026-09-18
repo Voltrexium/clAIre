@@ -55,18 +55,6 @@ export interface CapturePayload {
   mode: string;
 }
 
-export interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-  ts: string;
-}
-
-export interface Session {
-  messages: ChatMessage[];
-  summary?: string;
-  totalMessages?: number;
-}
-
 export interface StorageInfo {
   appDataDir: string;
   settingsPath: string;

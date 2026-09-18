@@ -1,10 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import {
-  getSettings,
-  openStorageFolder,
-  saveSettings,
-  storageInfo,
-} from "../shared/api";
+import { getSettings, openStorageFolder, saveSettings, storageInfo } from "../shared/api";
 import {
   ANTHROPIC_MODELS,
   OLLAMA_MODELS,
@@ -39,13 +34,7 @@ const DEFAULTS: Settings = {
   downscaleMaxWidth: 1280,
 };
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="field">
       <span>{label}</span>
@@ -54,11 +43,57 @@ function Field({
   );
 }
 
+function Text({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string | number;
+  onChange: (value: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <Field label={label}>
+      <input type={type} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+    </Field>
+  );
+}
+
+function ModelSelect({
+  label,
+  value,
+  models,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  models: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Field label={label}>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {withCurrent(models, value).map((model) => (
+          <option key={model} value={model}>
+            {model}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+}
+
 export default function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const patch = <K extends keyof Settings>(key: K, value: Settings[K]) =>
+    setSettings((current) => ({ ...current, [key]: value }));
 
   useEffect(() => {
     void (async () => {
@@ -72,22 +107,11 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
     })();
   }, []);
 
-  function patch<K extends keyof Settings>(key: K, value: Settings[K]) {
-    setSettings((current) => ({ ...current, [key]: value }));
-  }
-
   function onProvider(next: Provider) {
     setSettings((current) => {
       const preset = PROVIDER_PRESETS[next];
-      if (!preset) {
-        return { ...current, provider: next };
-      }
-      return {
-        ...current,
-        provider: next,
-        customBaseUrl: preset.base,
-        customModel: preset.defaultModel,
-      };
+      if (!preset) return { ...current, provider: next };
+      return { ...current, provider: next, customBaseUrl: preset.base, customModel: preset.defaultModel };
     });
   }
 
@@ -104,6 +128,8 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
       setBusy(false);
     }
   }
+
+  const preset = PROVIDER_PRESETS[settings.provider];
 
   return (
     <div className="settings-shell">
@@ -122,22 +148,18 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
       <section>
         <h2>Assistant</h2>
         <Field label="System prompt">
-          <textarea
-            rows={4}
-            value={settings.systemPrompt}
-            onChange={(e) => patch("systemPrompt", e.target.value)}
-          />
+          <textarea rows={4} value={settings.systemPrompt} onChange={(e) => patch("systemPrompt", e.target.value)} />
         </Field>
+        <div className="grid">
+          <Text label="Global hotkey" value={settings.hotkey} onChange={(value) => patch("hotkey", value)} />
+        </div>
       </section>
 
       <section>
         <h2>LLM provider</h2>
         <div className="grid">
           <Field label="Provider">
-            <select
-              value={settings.provider}
-              onChange={(e) => onProvider(e.target.value as Provider)}
-            >
+            <select value={settings.provider} onChange={(e) => onProvider(e.target.value as Provider)}>
               {PROVIDERS.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {provider.label}
@@ -145,117 +167,62 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
               ))}
             </select>
           </Field>
-          <Field label="Recent messages sent with each query">
-            <input
-              type="number"
-              min={0}
-              max={32}
-              value={settings.historyLimit}
-              onChange={(e) => patch("historyLimit", Number(e.target.value))}
-            />
-          </Field>
+          <Text
+            label="Recent messages sent with each query"
+            type="number"
+            value={settings.historyLimit}
+            onChange={(value) => patch("historyLimit", Number(value))}
+          />
         </div>
 
         {settings.provider === "openai" && (
           <div className="grid">
-            <Field label="OpenAI API key">
-              <input
-                type="password"
-                value={settings.openaiApiKey}
-                onChange={(e) => patch("openaiApiKey", e.target.value)}
-              />
-            </Field>
-            <Field label="Model">
-              <select value={settings.openaiModel} onChange={(e) => patch("openaiModel", e.target.value)}>
-                {withCurrent(OPENAI_MODELS, settings.openaiModel).map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Base URL">
-              <input value={settings.openaiBaseUrl} onChange={(e) => patch("openaiBaseUrl", e.target.value)} />
-            </Field>
+            <Text label="OpenAI API key" type="password" value={settings.openaiApiKey} onChange={(v) => patch("openaiApiKey", v)} />
+            <ModelSelect label="Model" value={settings.openaiModel} models={OPENAI_MODELS} onChange={(v) => patch("openaiModel", v)} />
+            <Text label="Base URL" value={settings.openaiBaseUrl} onChange={(v) => patch("openaiBaseUrl", v)} />
           </div>
         )}
 
         {settings.provider === "anthropic" && (
           <div className="grid">
-            <Field label="Anthropic API key">
-              <input
-                type="password"
-                value={settings.anthropicApiKey}
-                onChange={(e) => patch("anthropicApiKey", e.target.value)}
-              />
-            </Field>
-            <Field label="Model">
-              <select value={settings.anthropicModel} onChange={(e) => patch("anthropicModel", e.target.value)}>
-                {withCurrent(ANTHROPIC_MODELS, settings.anthropicModel).map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            <Text label="Anthropic API key" type="password" value={settings.anthropicApiKey} onChange={(v) => patch("anthropicApiKey", v)} />
+            <ModelSelect
+              label="Model"
+              value={settings.anthropicModel}
+              models={ANTHROPIC_MODELS}
+              onChange={(v) => patch("anthropicModel", v)}
+            />
           </div>
         )}
 
         {settings.provider === "ollama" && (
           <div className="grid">
-            <Field label="Ollama endpoint">
-              <input value={settings.ollamaBaseUrl} onChange={(e) => patch("ollamaBaseUrl", e.target.value)} />
-            </Field>
-            <Field label="Model">
-              <select value={settings.ollamaModel} onChange={(e) => patch("ollamaModel", e.target.value)}>
-                {withCurrent(OLLAMA_MODELS, settings.ollamaModel).map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            <Text label="Ollama endpoint" value={settings.ollamaBaseUrl} onChange={(v) => patch("ollamaBaseUrl", v)} />
+            <ModelSelect label="Model" value={settings.ollamaModel} models={OLLAMA_MODELS} onChange={(v) => patch("ollamaModel", v)} />
           </div>
         )}
 
-        {settings.provider === "custom" || PROVIDER_PRESETS[settings.provider] ? (
+        {(settings.provider === "custom" || preset) && (
           <div className="grid">
-            <Field label="API key">
-              <input
-                type="password"
-                value={settings.customApiKey}
-                onChange={(e) => patch("customApiKey", e.target.value)}
+            <Text label="API key" type="password" value={settings.customApiKey} onChange={(v) => patch("customApiKey", v)} />
+            {settings.provider === "custom" ? (
+              <Text label="Model" value={settings.customModel} placeholder="model-id" onChange={(v) => patch("customModel", v)} />
+            ) : (
+              <ModelSelect
+                label="Model"
+                value={settings.customModel}
+                models={preset?.models ?? []}
+                onChange={(v) => patch("customModel", v)}
               />
-            </Field>
-            <Field label="Model">
-              {settings.provider === "custom" ? (
-                <input
-                  value={settings.customModel}
-                  placeholder="model-id"
-                  onChange={(e) => patch("customModel", e.target.value)}
-                />
-              ) : (
-                <select value={settings.customModel} onChange={(e) => patch("customModel", e.target.value)}>
-                  {withCurrent(
-                    PROVIDER_PRESETS[settings.provider]?.models ?? [],
-                    settings.customModel,
-                  ).map((model) => (
-                    <option key={model} value={model}>
-                      {model}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-            <Field label="Base URL">
-              <input
-                value={settings.customBaseUrl}
-                placeholder="https://host/v1"
-                onChange={(e) => patch("customBaseUrl", e.target.value)}
-              />
-            </Field>
+            )}
+            <Text
+              label="Base URL"
+              value={settings.customBaseUrl}
+              placeholder="https://host/v1"
+              onChange={(v) => patch("customBaseUrl", v)}
+            />
           </div>
-        ) : null}
+        )}
       </section>
 
       <section>
@@ -269,16 +236,8 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
           Enable Google Programmable Search before the LLM call
         </label>
         <div className="grid">
-          <Field label="Google API key">
-            <input
-              type="password"
-              value={settings.googleApiKey}
-              onChange={(e) => patch("googleApiKey", e.target.value)}
-            />
-          </Field>
-          <Field label="Search engine ID (cx)">
-            <input value={settings.googleCx} onChange={(e) => patch("googleCx", e.target.value)} />
-          </Field>
+          <Text label="Google API key" type="password" value={settings.googleApiKey} onChange={(v) => patch("googleApiKey", v)} />
+          <Text label="Search engine ID (cx)" value={settings.googleCx} onChange={(v) => patch("googleCx", v)} />
         </div>
       </section>
 
@@ -301,15 +260,12 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
           </dl>
         )}
         <div className="grid">
-          <Field label="Max screenshot width (px)">
-            <input
-              type="number"
-              min={640}
-              max={3840}
-              value={settings.downscaleMaxWidth}
-              onChange={(e) => patch("downscaleMaxWidth", Number(e.target.value))}
-            />
-          </Field>
+          <Text
+            label="Max screenshot width (px)"
+            type="number"
+            value={settings.downscaleMaxWidth}
+            onChange={(v) => patch("downscaleMaxWidth", Number(v))}
+          />
         </div>
         <button className="ghost" type="button" onClick={() => void openStorageFolder()}>
           Open storage folder

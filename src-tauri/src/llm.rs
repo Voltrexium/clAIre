@@ -109,27 +109,40 @@ fn client() -> Result<reqwest::Client, String> {
         .map_err(|err| err.to_string())
 }
 
-fn extract_openai_token(value: &serde_json::Value) -> Option<String> {
-    let content = value.pointer("/choices/0/delta/content")?;
-    match content {
-        serde_json::Value::String(text) if !text.is_empty() => Some(text.clone()),
-        serde_json::Value::Array(parts) => {
-            let text = parts
-                .iter()
-                .filter_map(|part| {
-                    part.as_str()
-                        .map(str::to_string)
-                        .or_else(|| part.get("text").and_then(|v| v.as_str()).map(str::to_string))
-                })
-                .collect::<String>();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
-        _ => None,
+async fn ensure_ok(response: reqwest::Response, kind: &str) -> Result<reqwest::Response, String> {
+    if response.status().is_success() {
+        return Ok(response);
     }
+    Err(format!(
+        "{kind} error {}: {}",
+        response.status(),
+        response.text().await.unwrap_or_default()
+    ))
+}
+
+fn content_text(content: &serde_json::Value, trim: bool) -> Option<String> {
+    let text = match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| {
+                part.as_str()
+                    .map(str::to_string)
+                    .or_else(|| part.get("text").and_then(|v| v.as_str()).map(str::to_string))
+            })
+            .collect(),
+        _ => return None,
+    };
+    let text = if trim { text.trim().to_string() } else { text };
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn extract_openai_token(value: &serde_json::Value) -> Option<String> {
+    content_text(value.pointer("/choices/0/delta/content")?, false)
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -191,18 +204,8 @@ async fn stream_openai(
         req = req.bearer_auth(key);
     }
 
-    let response = req.send().await.map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "LLM error {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
-    }
-    collect_sse(app, response, |value| {
-        extract_openai_token(value)
-    })
-    .await
+    let response = ensure_ok(req.send().await.map_err(|err| err.to_string())?, "LLM").await?;
+    collect_sse(app, response, extract_openai_token).await
 }
 
 async fn stream_anthropic(
@@ -246,13 +249,7 @@ async fn stream_anthropic(
         .send()
         .await
         .map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Anthropic error {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
-    }
+    let response = ensure_ok(response, "Anthropic").await?;
     collect_sse(app, response, |value| {
         if value.get("type").and_then(|v| v.as_str()) == Some("content_block_delta") {
             value
@@ -303,14 +300,7 @@ async fn stream_ollama(
         .send()
         .await
         .map_err(|err| err.to_string())?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Ollama error {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ));
-    }
-    collect_ndjson(app, response).await
+    collect_ndjson(app, ensure_ok(response, "Ollama").await?).await
 }
 
 async fn complete_plain(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
@@ -381,37 +371,12 @@ async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<S
         req = req.bearer_auth(key);
     }
     let response = req.send().await.map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(format!("LLM error {status}: {body}"));
-    }
+    let body = ensure_ok(response, "LLM").await?.text().await.map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
-    extract_plain_openai(&value).ok_or_else(|| "The context model returned an empty response".into())
-}
-
-fn extract_plain_openai(value: &serde_json::Value) -> Option<String> {
-    let content = value.pointer("/choices/0/message/content")?;
-    match content {
-        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
-        serde_json::Value::Array(parts) => {
-            let text = parts
-                .iter()
-                .filter_map(|part| {
-                    part.as_str()
-                        .map(str::to_string)
-                        .or_else(|| part.get("text").and_then(|v| v.as_str()).map(str::to_string))
-                })
-                .collect::<String>();
-            let text = text.trim().to_string();
-            if text.is_empty() {
-                None
-            } else {
-                Some(text)
-            }
-        }
-        _ => None,
-    }
+    value
+        .pointer("/choices/0/message/content")
+        .and_then(|content| content_text(content, true))
+        .ok_or_else(|| "The context model returned an empty response".into())
 }
 
 async fn plain_anthropic(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
@@ -432,11 +397,11 @@ async fn plain_anthropic(settings: &Settings, system: &str, user: &str) -> Resul
         .send()
         .await
         .map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(format!("Anthropic error {status}: {body}"));
-    }
+    let body = ensure_ok(response, "Anthropic")
+        .await?
+        .text()
+        .await
+        .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     let mut text = String::new();
     if let Some(blocks) = value.get("content").and_then(|v| v.as_array()) {
@@ -472,11 +437,11 @@ async fn plain_ollama(settings: &Settings, system: &str, user: &str) -> Result<S
         .send()
         .await
         .map_err(|err| err.to_string())?;
-    let status = response.status();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    if !status.is_success() {
-        return Err(format!("Ollama error {status}: {body}"));
-    }
+    let body = ensure_ok(response, "Ollama")
+        .await?
+        .text()
+        .await
+        .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     let text = value
         .pointer("/message/content")
