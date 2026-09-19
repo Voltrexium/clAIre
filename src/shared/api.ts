@@ -41,6 +41,10 @@ export function openStorageFolder() {
   return invoke<void>("open_storage_folder");
 }
 
+export function openUrl(url: string) {
+  return invoke<void>("open_url", { url });
+}
+
 export function storageInfo() {
   return invoke<StorageInfo>("storage_info");
 }

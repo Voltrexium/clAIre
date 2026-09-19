@@ -35,12 +35,18 @@ pub fn load_settings(app: &AppHandle) -> Result<Settings, String> {
         save_settings(app, &settings)?;
         let mut settings = settings;
         settings.apply_temp_gemini_from_env();
+        settings.apply_temp_search_from_env();
+        settings.adopt_legacy_search_usage();
+        settings.sync_form_limits_from_keys();
         return Ok(settings);
     }
     let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
     let mut settings: Settings =
         serde_json::from_str(&raw).map_err(|err| format!("Invalid settings.json: {err}"))?;
     settings.apply_temp_gemini_from_env();
+    settings.apply_temp_search_from_env();
+    settings.adopt_legacy_search_usage();
+    settings.sync_form_limits_from_keys();
     Ok(settings)
 }
 

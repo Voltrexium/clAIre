@@ -60,6 +60,7 @@ pub fn run() {
             commands::fit_overlay,
             commands::open_settings,
             commands::open_storage_folder,
+            commands::open_url,
             commands::storage_info,
             commands::recapture,
             commands::list_displays,

@@ -10,6 +10,7 @@ import {
   hideOverlay,
   listDisplays,
   newChat,
+  openUrl,
   recapture,
   setCaptureMode as persistCaptureMode,
   setWindowMode,
@@ -18,7 +19,7 @@ import {
 import DisplayPicker from "../shared/DisplayPicker";
 import SettingsPage from "../settings/Settings";
 import { renderLiteMarkdown } from "../shared/markdown";
-import type { CaptureMode, CapturePayload, DisplayInfo } from "../shared/types";
+import type { AskStatus, CaptureMode, CapturePayload, DisplayInfo, SearchSource } from "../shared/types";
 
 function usableLabel(mode?: string | null) {
   if (!mode || mode === "current window") return "";
@@ -41,7 +42,10 @@ export default function Overlay() {
   const [searchOn, setSearchOn] = useState(false);
   const [searchAvailable, setSearchAvailable] = useState(false);
   const [usedSearch, setUsedSearch] = useState(false);
+  const [usedSearchApi, setUsedSearchApi] = useState("");
+  const [searchSources, setSearchSources] = useState<SearchSource[]>([]);
   const [usedVision, setUsedVision] = useState(false);
+  const [askStatus, setAskStatus] = useState<AskStatus | null>(null);
   const [captureMode, setCaptureMode] = useState<CaptureMode>("current");
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
@@ -63,10 +67,21 @@ export default function Overlay() {
   const captureModeRef = useRef<CaptureMode>("current");
   const captureRef = useRef<CapturePayload | null>(null);
   const pinWindowIdRef = useRef<number | null>(null);
-  const pinToBottomRef = useRef(false);
+  const pinQueryRef = useRef(false);
+  const followRef = useRef(false);
+  const ignoreScrollRef = useRef(false);
+  const latestUserRef = useRef<HTMLElement | null>(null);
+  const latestAssistantRef = useRef<HTMLElement | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const chatLogRef = useRef<HTMLElement | null>(null);
   const windowListBusy = useRef(false);
   const [stayOpen, setStayOpen] = useState(false);
+  const [showJump, setShowJump] = useState(false);
+  const [fadeTop, setFadeTop] = useState(false);
+  const [fadeBottom, setFadeBottom] = useState(false);
+  const [queryExpanded, setQueryExpanded] = useState(false);
+  const [queryNeedsClamp, setQueryNeedsClamp] = useState(false);
+  const [queryCap, setQueryCap] = useState(120);
   const expanded =
     showSettings || log.length > 0 || captureMode === "all" || stayOpen;
 
@@ -102,13 +117,23 @@ export default function Overlay() {
   }, []);
 
   const resetAsk = useCallback(() => {
+    followRef.current = false;
+    pinQueryRef.current = false;
+    setShowJump(false);
+    setFadeTop(false);
+    setFadeBottom(false);
+    setQueryExpanded(false);
+    setQueryNeedsClamp(false);
     setLog([]);
     setQuery("");
     setError(null);
     setBusy(false);
     setConfirmClear(false);
     setUsedSearch(false);
+    setUsedSearchApi("");
+    setSearchSources([]);
     setUsedVision(false);
+    setAskStatus(null);
   }, []);
 
   function startDrag(event: React.MouseEvent) {
@@ -171,6 +196,9 @@ export default function Overlay() {
           next[next.length - 1] = { ...last, content: last.content + token };
           return next;
         });
+      });
+      await add<AskStatus>("claire://ask-status", (status) => {
+        setAskStatus(status.phase === "idle" ? null : status);
       });
       await add<string>("claire://error", (message) => {
         setError(message);
@@ -345,6 +373,31 @@ export default function Overlay() {
     const onScroll = (event: Event) => remember(event.target);
     el.addEventListener("scroll", onScroll, true);
 
+    const pinLatestQuery = () => {
+      const scroller = chatLogRef.current;
+      const turn = latestUserRef.current;
+      if (!scroller || !turn) return;
+      const sRect = scroller.getBoundingClientRect();
+      const qRect = turn.getBoundingClientRect();
+      const cap = Math.max(88, scroller.clientHeight * 0.3);
+      if (qRect.height <= cap) {
+        scroller.scrollTop += qRect.top - sRect.top;
+      } else {
+        scroller.scrollTop += qRect.bottom - cap - sRect.top;
+      }
+    };
+
+    const followAnswer = () => {
+      const scroller = chatLogRef.current;
+      const answer = latestAssistantRef.current;
+      if (!scroller || !answer) return;
+      const sRect = scroller.getBoundingClientRect();
+      const aRect = answer.getBoundingClientRect();
+      if (aRect.bottom > sRect.bottom - 8) {
+        scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
+      }
+    };
+
     const restore = () => {
       positions.forEach(({ top, left }, node) => {
         if (!(node instanceof HTMLElement) || !node.isConnected) {
@@ -353,6 +406,12 @@ export default function Overlay() {
         }
         node.scrollTop = top;
         node.scrollLeft = left;
+      });
+      ignoreScrollRef.current = true;
+      if (pinQueryRef.current) pinLatestQuery();
+      else if (followRef.current) followAnswer();
+      requestAnimationFrame(() => {
+        ignoreScrollRef.current = false;
       });
     };
 
@@ -364,7 +423,15 @@ export default function Overlay() {
       const kids = Array.from(kid.children) as HTMLElement[];
       let height = pad;
       kids.forEach((child, index) => {
-        height += child.offsetHeight;
+        const log =
+          child.classList.contains("chat-log")
+            ? child
+            : (child.querySelector(".chat-log") as HTMLElement | null);
+        if (log) {
+          height += Math.max(0, child.offsetHeight - log.offsetHeight) + Math.max(log.scrollHeight, log.offsetHeight);
+        } else {
+          height += child.offsetHeight;
+        }
         if (index < kids.length - 1) height += gap;
       });
       return height;
@@ -406,7 +473,7 @@ export default function Overlay() {
     const observer = new ResizeObserver(() => apply());
     observer.observe(el);
     el.querySelectorAll(
-      ".titlebar, .overlay-body, .overlay-body > *, .composer-block, .meta, .window-picker, .window-list",
+      ".titlebar, .overlay-body, .overlay-body > *, .chat-log, .composer-block, .meta, .window-picker, .window-list",
     ).forEach((node) => {
       observer.observe(node);
     });
@@ -417,26 +484,143 @@ export default function Overlay() {
       observer.disconnect();
       window.clearTimeout(retry);
       el.removeEventListener("scroll", onScroll, true);
-      el.style.height = "";
+      if (!el.classList.contains("has-thread")) el.style.height = "";
     };
-  }, [expanded, showSettings, log.length, captureMode, displays.length, selectedIds.length, capturing]);
-
-  useLayoutEffect(() => {
-    const el = bodyRef.current;
-    if (!el || !pinToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-    pinToBottomRef.current = false;
-  }, [log, busy]);
+  }, [expanded, showSettings, captureMode, displays.length, selectedIds.length, capturing, log.length, log[log.length - 1]?.content.length]);
 
   const continuing = log.length > 0;
+  const firstUserIndex = log.findIndex((item) => item.role === "user");
+  let latestUserIndex = -1;
+  for (let i = log.length - 1; i >= 0; i -= 1) {
+    if (log[i].role === "user") {
+      latestUserIndex = i;
+      break;
+    }
+  }
+
+  const updateChatChrome = useCallback(() => {
+    const scroller = chatLogRef.current;
+    if (!scroller) {
+      setFadeTop(false);
+      setFadeBottom(false);
+      setShowJump(false);
+      return;
+    }
+    const top = scroller.scrollTop > 6;
+    const bottom = scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 6;
+    setFadeTop(top);
+    setFadeBottom(bottom);
+    setShowJump(!followRef.current && bottom);
+  }, []);
+
+  const alignThread = useCallback(
+    (mode: "pin" | "follow") => {
+      const scroller = chatLogRef.current;
+      if (!scroller) return;
+      ignoreScrollRef.current = true;
+      if (mode === "pin") {
+        const turn = latestUserRef.current;
+        if (turn) {
+          const sRect = scroller.getBoundingClientRect();
+          const qRect = turn.getBoundingClientRect();
+          const cap = Math.max(88, scroller.clientHeight * 0.3);
+          if (qRect.height <= cap) {
+            scroller.scrollTop += qRect.top - sRect.top;
+          } else {
+            scroller.scrollTop += qRect.bottom - cap - sRect.top;
+          }
+        }
+      }
+      const answer = latestAssistantRef.current;
+      if (answer && followRef.current) {
+        const sRect = scroller.getBoundingClientRect();
+        const aRect = answer.getBoundingClientRect();
+        if (aRect.bottom > sRect.bottom - 8) {
+          scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
+        }
+      }
+      requestAnimationFrame(() => {
+        ignoreScrollRef.current = false;
+        updateChatChrome();
+      });
+    },
+    [updateChatChrome],
+  );
+
+  useLayoutEffect(() => {
+    const scroller = chatLogRef.current;
+    const body = latestUserRef.current?.querySelector(".answer-body") as HTMLElement | null;
+    if (!scroller || !body) {
+      setQueryNeedsClamp(false);
+      return;
+    }
+    const cap = Math.max(88, scroller.clientHeight * 0.3);
+    setQueryCap(cap);
+    body.style.maxHeight = "none";
+    const overflows = body.scrollHeight > cap + 4;
+    body.style.maxHeight = "";
+    setQueryNeedsClamp(overflows);
+  }, [log, queryExpanded, continuing]);
+
+  useLayoutEffect(() => {
+    if (pinQueryRef.current) {
+      alignThread("pin");
+      const first = log.find((entry) => entry.role === "user");
+      const waitingForShot =
+        capturing ||
+        Boolean(captureRef.current && first && !first.image && firstUserIndex === latestUserIndex);
+      if (!waitingForShot) pinQueryRef.current = false;
+      return;
+    }
+    if (followRef.current) alignThread("follow");
+    else updateChatChrome();
+  }, [log, capturing, firstUserIndex, latestUserIndex, alignThread, updateChatChrome]);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || !continuing) return;
+    const onWheel = (event: WheelEvent) => {
+      const scroller = chatLogRef.current;
+      if (!scroller || event.deltaY === 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".lightbox") || target?.closest(".chat-log") === scroller) return;
+      scroller.scrollTop += event.deltaY;
+      event.preventDefault();
+    };
+    card.addEventListener("wheel", onWheel, { passive: false });
+    return () => card.removeEventListener("wheel", onWheel);
+  }, [continuing]);
+
+  function onChatScroll() {
+    if (ignoreScrollRef.current) {
+      updateChatChrome();
+      return;
+    }
+    followRef.current = false;
+    pinQueryRef.current = false;
+    updateChatChrome();
+  }
+
+  function jumpToLatest() {
+    followRef.current = true;
+    pinQueryRef.current = true;
+    setShowJump(false);
+    alignThread("pin");
+  }
 
   async function sendMessage(text: string) {
-    pinToBottomRef.current = true;
+    pinQueryRef.current = true;
+    followRef.current = true;
+    setShowJump(false);
+    setQueryExpanded(false);
     setQuery("");
     setBusy(true);
     setError(null);
     setUsedSearch(false);
+    setUsedSearchApi("");
+    setSearchSources([]);
     setUsedVision(false);
+    setAskStatus({ phase: "llm", api: "clAIre", detail: "starting" });
     setLog((current) => [
       ...current,
       { role: "user", content: text },
@@ -454,16 +638,15 @@ export default function Overlay() {
       if (attached?.dataUrl) {
         setLog((current) => {
           const next = current.map((entry) => ({ ...entry }));
-          for (let index = next.length - 1; index >= 0; index -= 1) {
-            if (next[index].role === "user") {
-              next[index] = {
-                ...next[index],
-                image: attached.dataUrl,
-                imageAlt: windowLabel || attached.mode || "Captured window",
-              };
-              break;
-            }
-          }
+          const firstUser = next.findIndex((entry) => entry.role === "user");
+          if (firstUser < 0) return current;
+          const followUp = next.some((entry, index) => entry.role === "user" && index !== firstUser);
+          if (followUp || next[firstUser].image) return current;
+          next[firstUser] = {
+            ...next[firstUser],
+            image: attached.dataUrl,
+            imageAlt: windowLabel || attached.mode || "Captured window",
+          };
           return next;
         });
       }
@@ -478,11 +661,14 @@ export default function Overlay() {
         return next;
       });
       setUsedSearch(result.usedSearch);
+      setUsedSearchApi(result.searchProvider || "");
+      setSearchSources(result.searchSources || []);
       setUsedVision(result.usedVision);
     } catch (err) {
       setError(String(err));
     } finally {
       setBusy(false);
+      setAskStatus(null);
       focusInput();
     }
   }
@@ -502,8 +688,15 @@ export default function Overlay() {
       return;
     }
     setLog([]);
+    setQueryExpanded(false);
+    setShowJump(false);
+    followRef.current = false;
+    pinQueryRef.current = false;
     setUsedSearch(false);
+    setUsedSearchApi("");
+    setSearchSources([]);
     setUsedVision(false);
+    setAskStatus(null);
     setError(null);
     focusInput();
   }
@@ -512,8 +705,9 @@ export default function Overlay() {
     closeSettings();
     try {
       const settings = await getSettings();
-      setSearchAvailable(settings.webSearchEnabled);
-      setSearchOn(settings.webSearchEnabled);
+      const enabled = settings.webSearchEnabled;
+      setSearchOn((on) => (enabled ? (searchAvailable ? on : true) : false));
+      setSearchAvailable(enabled);
     } catch {
       /* keep current toggles */
     }
@@ -581,7 +775,12 @@ export default function Overlay() {
   return (
     <div className="overlay-shell">
       <div
-        className={["overlay-card", showSettings ? "settings-open" : "", expanded ? "expanded" : "compact"].join(" ")}
+        className={[
+          "overlay-card",
+          showSettings ? "settings-open" : "",
+          expanded ? "expanded" : "compact",
+          continuing ? "has-thread" : "",
+        ].join(" ")}
         ref={cardRef}
       >
         <div
@@ -615,11 +814,23 @@ export default function Overlay() {
             </button>
             {searchAvailable && (
               <button
-                className={searchOn ? "chip on" : "chip"}
-                onClick={() => setSearchOn((value) => !value)}
+                className={searchOn ? "web-toggle on" : "web-toggle"}
                 type="button"
+                role="switch"
+                aria-checked={searchOn}
+                title={searchOn ? "Web search on" : "Web search off"}
+                onClick={() => setSearchOn((value) => !value)}
               >
-                Web
+                <span className="web-toggle-track" aria-hidden>
+                  <span className="web-toggle-knob">
+                    <svg viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="M3 12h18" />
+                      <path d="M12 3c2.6 3.2 2.6 14.8 0 18M12 3c-2.6 3.2-2.6 14.8 0 18" />
+                    </svg>
+                  </span>
+                </span>
+                <span className="web-toggle-label">Web</span>
               </button>
             )}
             <button
@@ -668,7 +879,7 @@ export default function Overlay() {
           <>
         {expanded && (
         <div className="overlay-body" ref={bodyRef}>
-        {captureMode === "current" && (
+        {captureMode === "current" && log.length === 0 && (
           <section className="current-panel">
             {capture ? (
               <button
@@ -715,14 +926,21 @@ export default function Overlay() {
         {error && <div className="banner error">{error}</div>}
 
         {log.length > 0 && (
-          <section className="chat-log" aria-live="polite">
+          <div
+            className={["chat-scroller", fadeTop ? "fade-top" : "", fadeBottom ? "fade-bottom" : ""].join(" ")}
+          >
+          <section className="chat-log" aria-live="polite" ref={chatLogRef} onScroll={onChatScroll}>
             <div className="thread-label">This chat</div>
             {log.map((entry, index) => {
               const lastAssistant = entry.role === "assistant" && index === log.length - 1;
+              const firstUser = index === firstUserIndex;
+              const latestUser = index === latestUserIndex;
+              const clampQuery = latestUser && queryNeedsClamp && !queryExpanded;
               return (
                 <article
                   key={`${entry.role}-${index}`}
                   className={entry.role === "user" ? "turn user" : "turn assistant"}
+                  ref={latestUser ? latestUserRef : lastAssistant ? latestAssistantRef : undefined}
                 >
                   {entry.role === "assistant" && (
                     <div className="turn-avatar" aria-hidden>
@@ -730,7 +948,7 @@ export default function Overlay() {
                     </div>
                   )}
                   <div className="turn-body">
-                    {entry.image && (
+                    {firstUser && entry.image && (
                       <button
                         className="log-shot"
                         type="button"
@@ -742,29 +960,74 @@ export default function Overlay() {
                     )}
                     {entry.content ? (
                       <div
-                        className="answer-body"
+                        className={clampQuery ? "answer-body clamped" : "answer-body"}
+                        style={clampQuery ? { maxHeight: queryCap } : undefined}
+                        onClick={(event) => {
+                          const link = (event.target as HTMLElement).closest("a");
+                          if (!link) return;
+                          event.preventDefault();
+                          const href = link.getAttribute("href");
+                          if (href) void openUrl(href);
+                        }}
                         dangerouslySetInnerHTML={{
                           __html: renderLiteMarkdown(entry.content),
                         }}
                       />
-                    ) : (
-                      <div className="typing" aria-label="Generating">
-                        <span />
-                        <span />
-                        <span />
+                    ) : null}
+                    {latestUser && queryNeedsClamp && (
+                      <button
+                        className="show-more"
+                        type="button"
+                        onClick={() => setQueryExpanded((open) => !open)}
+                      >
+                        {queryExpanded ? "Show less" : "Show full question"}
+                      </button>
+                    )}
+                    {busy && lastAssistant && (
+                      <div className="ask-status" aria-live="polite">
+                        <span className="ask-status-orb" />
+                        <strong>{askStatus?.api || "clAIre"}</strong>
+                        <span>{askStatus?.detail || (entry.content ? "streaming" : "thinking")}</span>
+                        <div className="typing" aria-hidden="true">
+                          <span />
+                          <span />
+                          <span />
+                        </div>
                       </div>
                     )}
                     {lastAssistant && (usedVision || usedSearch) && (
                       <div className="turn-tags">
                         {usedVision && <em>vision</em>}
-                        {usedSearch && <em>web</em>}
+                        {usedSearch && <em>{usedSearchApi || "web"}</em>}
                       </div>
+                    )}
+                    {lastAssistant && usedSearch && searchSources.length > 0 && (
+                      <ol className="search-cites">
+                        {searchSources.map((source) => (
+                          <li key={`${source.index}-${source.url}`}>
+                            <button
+                              type="button"
+                              className="cite-link"
+                              title={source.url}
+                              onClick={() => void openUrl(source.url)}
+                            >
+                              {source.title}
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
                     )}
                   </div>
                 </article>
               );
             })}
           </section>
+          {showJump && (
+            <button className="jump-latest" type="button" onClick={jumpToLatest}>
+              Latest
+            </button>
+          )}
+          </div>
         )}
         </div>
         )}
@@ -790,7 +1053,9 @@ export default function Overlay() {
             value={query}
             placeholder={
               busy
-                ? "Type the next message while clAIre answers…"
+                ? askStatus?.api
+                  ? `${askStatus.api} is ${askStatus.detail}…`
+                  : "Type the next message while clAIre answers…"
                 : continuing
                   ? "Ask a follow-up in this chat…"
                   : capture

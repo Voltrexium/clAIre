@@ -202,15 +202,18 @@ WEB SEARCH
 ========================================================================
 
 Feature                              Linux-X11    Linux-WL     macOS        Windows
-Enable in Settings (key + cx)        UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Enable in Settings (provider + key)  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Web chip only if search configured   UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Toggle Web on overlay                UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Google CSE results in prompt         UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Missing key/cx error                 UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Tavily / Brave / DuckDuckGo results  UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Monthly use counter persists         UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Ask status shows search then LLM API UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Missing key / monthly limit error    UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
 How to test
   Off: no Web chip. On: chip appears, Ask with Web on, answer cites results.
-  Toggle off for one query; no search call.
+  Status line should name Tavily/Brave/DuckDuckGo then the LLM.
+  Toggle off for one query; no search call. Counter in Settings should rise and survive restart.
 
 ========================================================================
 SETTINGS

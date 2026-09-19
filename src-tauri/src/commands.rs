@@ -1,12 +1,12 @@
 use std::sync::atomic::Ordering;
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow};
 
 use crate::capture;
 use crate::hotkey;
 use crate::llm;
-use crate::search;
+use crate::search::{self, SearchSource};
 use crate::settings::{CaptureMode, Settings};
 use crate::state::{AppState, CapturePayload};
 use crate::storage;
@@ -17,7 +17,29 @@ pub struct AskResult {
     pub answer: String,
     pub used_search: bool,
     pub used_vision: bool,
+    pub search_provider: Option<String>,
+    pub search_sources: Vec<SearchSource>,
 }
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct AskStatus {
+    phase: String,
+    api: String,
+    detail: String,
+}
+
+fn emit_ask_status(app: &AppHandle, phase: &str, api: &str, detail: &str) {
+    let _ = app.emit(
+        "claire://ask-status",
+        AskStatus {
+            phase: phase.into(),
+            api: api.into(),
+            detail: detail.into(),
+        },
+    );
+}
+
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,10 +92,14 @@ fn set_expanded(app: &AppHandle, expanded: bool) {
 
 fn pin_overlay_size(window: &WebviewWindow, height: f64) {
     let size = LogicalSize::new(880.0, height.clamp(140.0, 800.0));
+    let pos = window.outer_position().ok();
     // Pin min=max=size so GTK/WebKit actually shrinks frameless windows.
     let _ = window.set_min_size(Some(size));
     let _ = window.set_max_size(Some(size));
     let _ = window.set_size(size);
+    if let Some(PhysicalPosition { x, y }) = pos {
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
 }
 
 fn run_on_main(app: &AppHandle, work: impl FnOnce() + Send + 'static) {
@@ -516,7 +542,11 @@ pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<AppState>, settings: Settings) -> Result<Settings, String> {
+pub fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Settings, String> {
+    if let Ok(current) = lock_settings(&state) {
+        settings.search_usage = current.search_usage;
+    }
+    settings.apply_form_limits_to_keys();
     storage::save_settings(&app, &settings)?;
     hotkey::register(&app, &settings.hotkey)?;
     *state.settings.lock().map_err(|err| err.to_string())? = settings.clone();
@@ -599,6 +629,20 @@ pub fn storage_info(app: AppHandle, state: State<AppState>) -> Result<StorageInf
 pub fn open_storage_folder(app: AppHandle) -> Result<(), String> {
     let dir = storage::app_data_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    open_with_system(&dir.to_string_lossy())
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), String> {
+    let url = url.trim();
+    let parsed = url.parse::<reqwest::Url>().map_err(|_| "Invalid URL".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Only http(s) links can be opened".into());
+    }
+    open_with_system(url)
+}
+
+fn open_with_system(target: &str) -> Result<(), String> {
     let opener = if cfg!(target_os = "windows") {
         "explorer"
     } else if cfg!(target_os = "macos") {
@@ -607,7 +651,7 @@ pub fn open_storage_folder(app: AppHandle) -> Result<(), String> {
         "xdg-open"
     };
     std::process::Command::new(opener)
-        .arg(&dir)
+        .arg(target)
         .spawn()
         .map_err(|err| err.to_string())?;
     Ok(())
@@ -624,7 +668,7 @@ pub async fn ask_claire(
         return Err("Query is empty".into());
     }
 
-    let (settings, history, thread_context, png, windows, epoch) = {
+    let (mut settings, history, thread_context, png, windows, epoch) = {
         let state = app.state::<AppState>();
         let settings = lock_settings(&state)?;
         let session = state.session.lock().map_err(|err| err.to_string())?;
@@ -648,10 +692,28 @@ pub async fn ask_claire(
 
     let want_search = include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
     let mut used_search = false;
+    let mut search_provider = None;
+    let mut search_sources = Vec::new();
     let search_block = if want_search {
-        match search::google_search(&settings, &query).await {
-            Ok(block) => {
+        emit_ask_status(
+            &app,
+            "search",
+            settings.search_api_label(),
+            "searching the web",
+        );
+        match search::web_search(&settings, &query).await {
+            Ok(outcome) => {
                 used_search = true;
+                search_provider = Some(settings.search_api_label().to_string());
+                search_sources = outcome.sources;
+                let block = outcome.block;
+                {
+                    let state = app.state::<AppState>();
+                    let mut live = state.settings.lock().map_err(|err| err.to_string())?;
+                    live.record_search_use();
+                    settings.search_usage = live.search_usage.clone();
+                    storage::save_settings(&app, &live)?;
+                }
                 Some(block)
             }
             Err(err) => {
@@ -662,6 +724,17 @@ pub async fn ask_claire(
     } else {
         None
     };
+
+    emit_ask_status(
+        &app,
+        "llm",
+        settings.llm_api_label(),
+        if used_search {
+            "answering with search"
+        } else {
+            "answering"
+        },
+    );
 
     let result = llm::complete(
         &app,
@@ -675,9 +748,14 @@ pub async fn ask_claire(
     )
     .await
     .map_err(|err| {
+        emit_ask_status(&app, "idle", "", "");
         let _ = app.emit("claire://error", err.clone());
         err
     })?;
+
+    emit_ask_status(&app, "idle", "", "");
+
+    let (answer, search_sources) = search::compact_cites(&result.answer, &search_sources);
 
     let mut summary_job = None;
     {
@@ -688,19 +766,21 @@ pub async fn ask_claire(
                 &app,
                 &mut session,
                 query.clone(),
-                result.answer.clone(),
+                answer.clone(),
                 settings.history_limit,
             );
             summary_job = Some(epoch);
         }
     }
     if let Some(epoch) = summary_job {
-        spawn_context_update(app.clone(), settings, query, result.answer.clone(), epoch);
+        spawn_context_update(app.clone(), settings, query, answer.clone(), epoch);
     }
 
     Ok(AskResult {
-        answer: result.answer,
+        answer,
         used_search,
         used_vision: result.used_vision,
+        search_provider,
+        search_sources,
     })
 }

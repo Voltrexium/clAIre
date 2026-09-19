@@ -8,7 +8,9 @@ import {
   PROVIDERS,
   withCurrent,
 } from "../shared/models";
-import type { Provider, Settings, StorageInfo } from "../shared/types";
+import type { Provider, SearchProvider, Settings, StorageInfo } from "../shared/types";
+
+const EMPTY_USAGE = { tavily: {}, brave: {}, duckduckgo: {} };
 
 const DEFAULTS: Settings = {
   provider: "openai",
@@ -28,11 +30,49 @@ const DEFAULTS: Settings = {
   captureMode: "current",
   captureDisplayIds: [],
   webSearchEnabled: false,
-  googleApiKey: "",
-  googleCx: "",
+  searchProvider: "tavily",
+  tavilyApiKey: "",
+  braveApiKey: "",
+  tavilyMonthlyLimit: 1000,
+  braveMonthlyLimit: 2000,
+  duckduckgoMonthlyLimit: 0,
+  searchUsage: EMPTY_USAGE,
   historyLimit: 6,
   downscaleMaxWidth: 1280,
 };
+
+const SEARCH_PROVIDERS: { id: SearchProvider; label: string }[] = [
+  { id: "tavily", label: "Tavily" },
+  { id: "brave", label: "Brave" },
+  { id: "duckduckgo", label: "DuckDuckGo" },
+];
+
+function currentMonth() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+function activeSearchKey(settings: Settings) {
+  if (settings.searchProvider === "tavily") return settings.tavilyApiKey.trim();
+  if (settings.searchProvider === "brave") return settings.braveApiKey.trim();
+  return "local";
+}
+
+function usageLine(settings: Settings) {
+  const key = activeSearchKey(settings);
+  const slot = key ? settings.searchUsage?.[settings.searchProvider]?.[key] : undefined;
+  const count = slot && slot.month === currentMonth() ? slot.count : 0;
+  const limit =
+    settings.searchProvider === "tavily"
+      ? settings.tavilyMonthlyLimit
+      : settings.searchProvider === "brave"
+        ? settings.braveMonthlyLimit
+        : settings.duckduckgoMonthlyLimit;
+  const month = slot?.month || currentMonth();
+  const who = settings.searchProvider === "duckduckgo" ? "DuckDuckGo" : key ? "this API key" : "no key yet";
+  return limit > 0
+    ? `${count} / ${limit} this month (${month}) · ${who}`
+    : `${count} this month (${month}, no cap) · ${who}`;
+}
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -233,12 +273,76 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
             checked={settings.webSearchEnabled}
             onChange={(e) => patch("webSearchEnabled", e.target.checked)}
           />
-          Enable Google Programmable Search before the LLM call
+          Run web search before the LLM call
         </label>
         <div className="grid">
-          <Text label="Google API key" type="password" value={settings.googleApiKey} onChange={(v) => patch("googleApiKey", v)} />
-          <Text label="Search engine ID (cx)" value={settings.googleCx} onChange={(v) => patch("googleCx", v)} />
+          <Field label="Search API">
+            <select
+              value={settings.searchProvider}
+              onChange={(e) => patch("searchProvider", e.target.value as SearchProvider)}
+            >
+              {SEARCH_PROVIDERS.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {settings.searchProvider === "tavily" && (
+            <>
+              <Text
+                label="Tavily API key"
+                type="password"
+                value={settings.tavilyApiKey}
+                onChange={(v) =>
+                  setSettings((current) => ({
+                    ...current,
+                    tavilyApiKey: v,
+                    tavilyMonthlyLimit: current.searchUsage.tavily?.[v.trim()]?.monthlyLimit ?? 1000,
+                  }))
+                }
+              />
+              <Text
+                label="Tavily monthly limit"
+                type="number"
+                value={settings.tavilyMonthlyLimit}
+                onChange={(v) => patch("tavilyMonthlyLimit", Number(v))}
+              />
+            </>
+          )}
+          {settings.searchProvider === "brave" && (
+            <>
+              <Text
+                label="Brave API key"
+                type="password"
+                value={settings.braveApiKey}
+                onChange={(v) =>
+                  setSettings((current) => ({
+                    ...current,
+                    braveApiKey: v,
+                    braveMonthlyLimit: current.searchUsage.brave?.[v.trim()]?.monthlyLimit ?? 2000,
+                  }))
+                }
+              />
+              <Text
+                label="Brave monthly limit"
+                type="number"
+                value={settings.braveMonthlyLimit}
+                onChange={(v) => patch("braveMonthlyLimit", Number(v))}
+              />
+            </>
+          )}
+          {settings.searchProvider === "duckduckgo" && (
+            <Text
+              label="DuckDuckGo monthly limit (0 = none)"
+              type="number"
+              value={settings.duckduckgoMonthlyLimit}
+              onChange={(v) => patch("duckduckgoMonthlyLimit", Number(v))}
+            />
+          )}
         </div>
+        <p className="hint">{usageLine(settings)}</p>
+        <p className="hint">Count and cap are stored per API key for each search service.</p>
       </section>
 
       <section>

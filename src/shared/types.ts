@@ -13,6 +13,20 @@ export type Provider =
   | "custom";
 export type CaptureMode = "current" | "all";
 
+export type SearchProvider = "tavily" | "brave" | "duckduckgo";
+
+export interface KeyUsage {
+  month: string;
+  count: number;
+  monthlyLimit: number;
+}
+
+export interface SearchUsage {
+  tavily: Record<string, KeyUsage>;
+  brave: Record<string, KeyUsage>;
+  duckduckgo: Record<string, KeyUsage>;
+}
+
 export interface Settings {
   provider: Provider;
   openaiApiKey: string;
@@ -30,8 +44,13 @@ export interface Settings {
   captureMode: CaptureMode;
   captureDisplayIds: number[];
   webSearchEnabled: boolean;
-  googleApiKey: string;
-  googleCx: string;
+  searchProvider: SearchProvider;
+  tavilyApiKey: string;
+  braveApiKey: string;
+  tavilyMonthlyLimit: number;
+  braveMonthlyLimit: number;
+  duckduckgoMonthlyLimit: number;
+  searchUsage: SearchUsage;
   historyLimit: number;
   downscaleMaxWidth: number;
 }
@@ -62,8 +81,22 @@ export interface StorageInfo {
   historyCount: number;
 }
 
+export interface SearchSource {
+  index: number;
+  title: string;
+  url: string;
+}
+
 export interface AskResult {
   answer: string;
   usedSearch: boolean;
   usedVision: boolean;
+  searchProvider?: string | null;
+  searchSources?: SearchSource[];
+}
+
+export interface AskStatus {
+  phase: "search" | "llm" | "idle" | string;
+  api: string;
+  detail: string;
 }

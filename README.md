@@ -1,6 +1,6 @@
 # clAIre
 
-A lightweight, cross-platform desktop assistant. Press a global hotkey, clAIre captures the screen (or the active window) without first stealing focus, then overlays a small query bar. After you send a question — or open Settings / pick windows — the bar promotes into a normal resizable window. The screenshot is attached as vision context and optionally augmented with Google search before it is sent to the LLM you configure.
+A lightweight, cross-platform desktop assistant. Press a global hotkey, clAIre captures the screen (or the active window) without first stealing focus, then overlays a small query bar. After you send a question — or open Settings / pick windows — the bar promotes into a normal resizable window. The screenshot is attached as vision context and optionally augmented with web search before it is sent to the LLM you configure.
 
 clAIre lives in the system tray. Closing the overlay or settings window hides it; Quit from the tray icon exits.
 
@@ -66,7 +66,7 @@ Installers are written to `src-tauri/target/release/bundle/` (`.deb` / AppImage 
    - **Anthropic** — API key and Claude model
    - **Ollama** — local endpoint (`http://127.0.0.1:11434`) and a vision model such as `llava`
    - **Custom** — any OpenAI-compatible `/v1/chat/completions` server
-4. Optional: enable **Web search** and add a [Google Programmable Search](https://programmablesearchengine.google.com/) API key + `cx`.
+4. Optional: enable **Web search** (Tavily, Brave, or DuckDuckGo). For local testing, `API_KEY_SEARCH` / `TAVILY_API_KEY` / `BRAVE_API_KEY` in `.env` are applied like `API_KEY`.
 5. Set the global hotkey (default `Ctrl/Cmd+Shift+Space`) and capture target (primary display, all displays, or active window).
 6. Save. Press the hotkey: clAIre captures first, then focuses the overlay.
 
@@ -113,7 +113,7 @@ src-tauri/src/capture.rs   Cross-platform screenshot (xcap)
 src-tauri/src/hotkey.rs    Global shortcut registration
 src-tauri/src/tray.rs      Background tray persistence
 src-tauri/src/llm.rs       OpenAI / Anthropic / Ollama / custom vision clients
-src-tauri/src/search.rs    Optional Google CSE augmentation
+src-tauri/src/search.rs    Optional Tavily / Brave / DuckDuckGo augmentation
 src-tauri/src/storage.rs   App-data session + wipe
 ```
 
@@ -122,9 +122,9 @@ flowchart LR
   Hotkey --> Capture
   Capture --> Overlay
   Overlay --> Search{Web search?}
-  Search -->|optional| Google
+  Search -->|optional| TavilyBraveDDG
   Search --> LLM
-  Google --> LLM
+  TavilyBraveDDG --> LLM
   LLM --> Overlay
 ```
 

@@ -21,7 +21,11 @@ pub async fn complete(
 ) -> Result<LlmResult, String> {
     let mut inner = query.to_string();
     if let Some(search) = search_block {
-        inner = format!("<search_results>\n{search}\n</search_results>\n\n{inner}");
+        inner = format!(
+            "<search_results>\n{search}\n</search_results>\n\n\
+             Prefer facts in <search_results> over training knowledge when they conflict.\n\
+             When you use a numbered source, cite it inline as [1], [2], etc. Use only those numbers. Do not mention unused sources.\n\n{inner}"
+        );
     }
     if image_png.is_some() && !windows.is_empty() {
         inner = format!("{}\n\n{inner}", windows_xml(windows));
