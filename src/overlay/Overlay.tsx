@@ -75,6 +75,10 @@ export default function Overlay() {
   const bodyRef = useRef<HTMLDivElement>(null);
   const chatLogRef = useRef<HTMLElement | null>(null);
   const windowListBusy = useRef(false);
+  const tokenBuf = useRef("");
+  const tokenTimer = useRef(0);
+  const tokenGen = useRef(0);
+  const applyFitRef = useRef<() => void>(() => {});
   const [stayOpen, setStayOpen] = useState(false);
   const [showJump, setShowJump] = useState(false);
   const [fadeTop, setFadeTop] = useState(false);
@@ -82,6 +86,8 @@ export default function Overlay() {
   const [queryExpanded, setQueryExpanded] = useState(false);
   const [queryNeedsClamp, setQueryNeedsClamp] = useState(false);
   const [queryCap, setQueryCap] = useState(120);
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const copiedTimer = useRef(0);
   const expanded =
     showSettings || log.length > 0 || captureMode === "all" || stayOpen;
 
@@ -116,7 +122,17 @@ export default function Overlay() {
     setCapturing(true);
   }, []);
 
+  const dropTokens = useCallback(() => {
+    tokenGen.current += 1;
+    tokenBuf.current = "";
+    if (tokenTimer.current) {
+      window.clearTimeout(tokenTimer.current);
+      tokenTimer.current = 0;
+    }
+  }, []);
+
   const resetAsk = useCallback(() => {
+    dropTokens();
     followRef.current = false;
     pinQueryRef.current = false;
     setShowJump(false);
@@ -134,7 +150,7 @@ export default function Overlay() {
     setSearchSources([]);
     setUsedVision(false);
     setAskStatus(null);
-  }, []);
+  }, [dropTokens]);
 
   function startDrag(event: React.MouseEvent) {
     if ((event.target as HTMLElement).closest("button")) return;
@@ -188,19 +204,30 @@ export default function Overlay() {
         finishCaptureWait();
       });
       await add<string>("claire://token", (token) => {
-        setLog((current) => {
-          if (current.length === 0) return current;
-          const next = current.slice();
-          const last = next[next.length - 1];
-          if (last.role !== "assistant") return current;
-          next[next.length - 1] = { ...last, content: last.content + token };
-          return next;
-        });
+        tokenBuf.current += token;
+        if (tokenTimer.current) return;
+        const gen = tokenGen.current;
+        tokenTimer.current = window.setTimeout(() => {
+          tokenTimer.current = 0;
+          if (gen !== tokenGen.current) return;
+          const chunk = tokenBuf.current;
+          tokenBuf.current = "";
+          if (!chunk) return;
+          setLog((current) => {
+            if (current.length === 0) return current;
+            const next = current.slice();
+            const last = next[next.length - 1];
+            if (last.role !== "assistant") return current;
+            next[next.length - 1] = { ...last, content: last.content + chunk };
+            return next;
+          });
+        }, 40);
       });
       await add<AskStatus>("claire://ask-status", (status) => {
         setAskStatus(status.phase === "idle" ? null : status);
       });
       await add<string>("claire://error", (message) => {
+        dropTokens();
         setError(message);
         setBusy(false);
         if (capturingRef.current) finishCaptureWait();
@@ -263,11 +290,13 @@ export default function Overlay() {
 
     return () => {
       cancelled = true;
+      dropTokens();
       unlisteners.forEach((unlisten) => unlisten());
       window.removeEventListener("keydown", onKey);
       window.clearTimeout(debounceRef.current);
+      window.clearTimeout(copiedTimer.current);
     };
-  }, [beginCaptureWait, closeSettings, finishCaptureWait, focusInput, openSettingsView, resetAsk]);
+  }, [beginCaptureWait, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, resetAsk]);
 
   function openPreview(src: string, alt: string) {
     const next = { src, alt };
@@ -365,6 +394,7 @@ export default function Overlay() {
     let lastH = 0;
     let fitted = false;
     let cancelled = false;
+    let raf = 0;
     const positions = new Map<Element, { top: number; left: number }>();
     const remember = (node: EventTarget | null) => {
       if (!(node instanceof HTMLElement) || node === el) return;
@@ -470,23 +500,37 @@ export default function Overlay() {
           requestAnimationFrame(restore);
         });
     };
-    const observer = new ResizeObserver(() => apply());
+    const schedule = () => {
+      if (cancelled || raf) return;
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        apply();
+      });
+    };
+    applyFitRef.current = schedule;
+    const observer = new ResizeObserver(() => schedule());
     observer.observe(el);
     el.querySelectorAll(
       ".titlebar, .overlay-body, .overlay-body > *, .chat-log, .composer-block, .meta, .window-picker, .window-list",
     ).forEach((node) => {
       observer.observe(node);
     });
-    apply();
-    const retry = window.setTimeout(apply, 50);
+    schedule();
+    const retry = window.setTimeout(schedule, 50);
     return () => {
       cancelled = true;
+      applyFitRef.current = () => {};
       observer.disconnect();
       window.clearTimeout(retry);
+      window.cancelAnimationFrame(raf);
       el.removeEventListener("scroll", onScroll, true);
       if (!el.classList.contains("has-thread")) el.style.height = "";
     };
-  }, [expanded, showSettings, captureMode, displays.length, selectedIds.length, capturing, log.length, log[log.length - 1]?.content.length]);
+  }, [expanded, showSettings, captureMode]);
+
+  useLayoutEffect(() => {
+    applyFitRef.current();
+  }, [displays.length, selectedIds.length, capturing, log, queryNeedsClamp, queryExpanded]);
 
   const continuing = log.length > 0;
   const firstUserIndex = log.findIndex((item) => item.role === "user");
@@ -608,6 +652,25 @@ export default function Overlay() {
     alignThread("pin");
   }
 
+  async function copyOutput(index: number, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    setCopiedIndex(index);
+    window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopiedIndex(null), 1500);
+  }
+
   async function sendMessage(text: string) {
     pinQueryRef.current = true;
     followRef.current = true;
@@ -651,6 +714,7 @@ export default function Overlay() {
         });
       }
       const result = await askClaire(text, searchOn);
+      dropTokens();
       setLog((current) => {
         if (current.length === 0) return current;
         const next = current.slice();
@@ -665,6 +729,7 @@ export default function Overlay() {
       setSearchSources(result.searchSources || []);
       setUsedVision(result.usedVision);
     } catch (err) {
+      dropTokens();
       setError(String(err));
     } finally {
       setBusy(false);
@@ -688,6 +753,7 @@ export default function Overlay() {
       return;
     }
     setLog([]);
+    dropTokens();
     setQueryExpanded(false);
     setShowJump(false);
     followRef.current = false;
@@ -812,27 +878,6 @@ export default function Overlay() {
             >
               {expanded ? "All windows" : "Windows"}
             </button>
-            {searchAvailable && (
-              <button
-                className={searchOn ? "web-toggle on" : "web-toggle"}
-                type="button"
-                role="switch"
-                aria-checked={searchOn}
-                title={searchOn ? "Web search on" : "Web search off"}
-                onClick={() => setSearchOn((value) => !value)}
-              >
-                <span className="web-toggle-track" aria-hidden>
-                  <span className="web-toggle-knob">
-                    <svg viewBox="0 0 24 24">
-                      <circle cx="12" cy="12" r="9" />
-                      <path d="M3 12h18" />
-                      <path d="M12 3c2.6 3.2 2.6 14.8 0 18M12 3c-2.6 3.2-2.6 14.8 0 18" />
-                    </svg>
-                  </span>
-                </span>
-                <span className="web-toggle-label">Web</span>
-              </button>
-            )}
             <button
               className={showSettings ? "chip on" : "ghost"}
               type="button"
@@ -959,20 +1004,49 @@ export default function Overlay() {
                       </button>
                     )}
                     {entry.content ? (
-                      <div
-                        className={clampQuery ? "answer-body clamped" : "answer-body"}
-                        style={clampQuery ? { maxHeight: queryCap } : undefined}
-                        onClick={(event) => {
-                          const link = (event.target as HTMLElement).closest("a");
-                          if (!link) return;
-                          event.preventDefault();
-                          const href = link.getAttribute("href");
-                          if (href) void openUrl(href);
-                        }}
-                        dangerouslySetInnerHTML={{
-                          __html: renderLiteMarkdown(entry.content),
-                        }}
-                      />
+                      entry.role === "assistant" ? (
+                        <div className="assistant-output">
+                          <div
+                            className="answer-body"
+                            onClick={(event) => {
+                              const link = (event.target as HTMLElement).closest("a");
+                              if (!link) return;
+                              event.preventDefault();
+                              const href = link.getAttribute("href");
+                              if (href) void openUrl(href);
+                            }}
+                            dangerouslySetInnerHTML={{
+                              __html: renderLiteMarkdown(entry.content),
+                            }}
+                          />
+                          <button
+                            className="copy-output"
+                            type="button"
+                            title={copiedIndex === index ? "Copied" : "Copy response"}
+                            aria-label={copiedIndex === index ? "Copied" : "Copy response"}
+                            onClick={() => void copyOutput(index, entry.content)}
+                          >
+                            {copiedIndex === index ? (
+                              <svg viewBox="0 0 24 24" aria-hidden>
+                                <path d="M20 6 9 17l-5-5" />
+                              </svg>
+                            ) : (
+                              <svg viewBox="0 0 24 24" aria-hidden>
+                                <rect x="9" y="9" width="13" height="13" rx="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              </svg>
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        <div
+                          className={clampQuery ? "answer-body clamped" : "answer-body"}
+                          style={clampQuery ? { maxHeight: queryCap } : undefined}
+                          dangerouslySetInnerHTML={{
+                            __html: renderLiteMarkdown(entry.content),
+                          }}
+                        />
+                      )
                     ) : null}
                     {latestUser && queryNeedsClamp && (
                       <button
@@ -1071,6 +1145,27 @@ export default function Overlay() {
               }
             }}
           />
+          {searchAvailable && (
+            <button
+              className={searchOn ? "web-toggle on" : "web-toggle"}
+              type="button"
+              role="switch"
+              aria-checked={searchOn}
+              title={searchOn ? "Web search on" : "Web search off"}
+              onClick={() => setSearchOn((value) => !value)}
+            >
+              <span className="web-toggle-track" aria-hidden>
+                <span className="web-toggle-knob">
+                  <svg viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M3 12h18" />
+                    <path d="M12 3c2.6 3.2 2.6 14.8 0 18M12 3c-2.6 3.2-2.6 14.8 0 18" />
+                  </svg>
+                </span>
+              </span>
+              <span className="web-toggle-label">Web</span>
+            </button>
+          )}
           <button
             className="primary send"
             type="button"

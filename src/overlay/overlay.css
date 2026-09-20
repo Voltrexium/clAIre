@@ -431,6 +431,11 @@ body,
   border-color: var(--accent);
 }
 
+.composer .web-toggle {
+  height: auto;
+  align-self: stretch;
+}
+
 .send {
   min-width: 88px;
   height: auto;
@@ -645,6 +650,47 @@ body,
   flex: 1;
   min-width: 0;
   padding-top: 2px;
+}
+
+.assistant-output {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.assistant-output .answer-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.copy-output {
+  margin-top: 2px;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.copy-output svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.copy-output:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .turn-tags {

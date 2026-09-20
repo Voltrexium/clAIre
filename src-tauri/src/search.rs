@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::Value;
@@ -33,11 +36,7 @@ pub async fn web_search(settings: &Settings, query: &str) -> Result<SearchOutcom
         ));
     }
 
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .user_agent("clAIre/0.1 (+https://github.com/claire)")
-        .build()
-        .map_err(|err| err.to_string())?;
+    let client = search_client()?;
 
     let pack = match settings.search_provider {
         SearchProvider::Tavily => tavily_search(&client, settings, query).await?,
@@ -72,6 +71,20 @@ fn sources_from(pack: &SearchPack) -> Vec<SearchSource> {
             url: hit.url.clone(),
         })
         .collect()
+}
+
+fn search_client() -> Result<&'static Client, String> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .timeout(Duration::from_secs(20))
+                .user_agent("clAIre/0.1 (+https://github.com/claire)")
+                .build()
+                .map_err(|err| err.to_string())
+        })
+        .as_ref()
+        .map_err(|err| err.clone())
 }
 
 pub fn compact_cites(answer: &str, sources: &[SearchSource]) -> (String, Vec<SearchSource>) {

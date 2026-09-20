@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -452,18 +453,35 @@ fn dotenv_value(names: &[&str]) -> Option<String> {
             }
         }
     }
-    for path in dotenv_candidates() {
-        if let Some(map) = parse_dotenv(&path) {
-            for name in names {
-                if let Some(value) = map.get(*name) {
-                    if !value.is_empty() {
-                        return Some(value.clone());
-                    }
-                }
+    let map = dotenv_file_map()?;
+    for name in names {
+        if let Some(value) = map.get(*name) {
+            if !value.is_empty() {
+                return Some(value.clone());
             }
         }
     }
     None
+}
+
+fn dotenv_file_map() -> Option<&'static HashMap<String, String>> {
+    static MAP: OnceLock<Option<HashMap<String, String>>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        let mut merged = HashMap::new();
+        for path in dotenv_candidates() {
+            if let Some(map) = parse_dotenv(&path) {
+                for (key, value) in map {
+                    merged.entry(key).or_insert(value);
+                }
+            }
+        }
+        if merged.is_empty() {
+            None
+        } else {
+            Some(merged)
+        }
+    })
+    .as_ref()
 }
 
 fn dotenv_candidates() -> Vec<PathBuf> {

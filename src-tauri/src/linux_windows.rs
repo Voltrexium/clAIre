@@ -1,8 +1,38 @@
 use std::collections::HashMap;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use crate::capture::DisplayInfo;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExtraKind {
+    None,
+    Hypr,
+    Sway,
+    Niri,
+    Atspi,
+}
+
+fn extra_kind() -> ExtraKind {
+    static KIND: OnceLock<ExtraKind> = OnceLock::new();
+    *KIND.get_or_init(|| {
+        if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
+            ExtraKind::Hypr
+        } else if std::env::var_os("SWAYSOCK").is_some() {
+            ExtraKind::Sway
+        } else if std::env::var_os("NIRI_SOCKET").is_some() {
+            ExtraKind::Niri
+        } else if std::env::var("XDG_SESSION_TYPE")
+            .ok()
+            .is_some_and(|value| value.eq_ignore_ascii_case("wayland"))
+        {
+            ExtraKind::Atspi
+        } else {
+            ExtraKind::None
+        }
+    })
+}
 
 fn extra_rects() -> &'static Mutex<HashMap<u32, (i32, i32, u32, u32)>> {
     static EXTRA_RECTS: OnceLock<Mutex<HashMap<u32, (i32, i32, u32, u32)>>> = OnceLock::new();
@@ -15,10 +45,13 @@ pub fn extra_rect(id: u32) -> Option<(i32, i32, u32, u32)> {
 
 pub fn list_extra() -> Vec<DisplayInfo> {
     let mut out = Vec::new();
-    merge(&mut out, atspi_windows());
-    merge(&mut out, hypr_windows());
-    merge(&mut out, sway_windows());
-    merge(&mut out, niri_windows());
+    match extra_kind() {
+        ExtraKind::Hypr => merge(&mut out, hypr_windows()),
+        ExtraKind::Sway => merge(&mut out, sway_windows()),
+        ExtraKind::Niri => merge(&mut out, niri_windows()),
+        ExtraKind::Atspi => merge(&mut out, atspi_windows()),
+        ExtraKind::None => {}
+    }
     if let Ok(mut rects) = extra_rects().lock() {
         rects.clear();
         for item in &out {
@@ -29,7 +62,11 @@ pub fn list_extra() -> Vec<DisplayInfo> {
 }
 
 pub fn peek_active() -> Option<DisplayInfo> {
-    let item = hypr_active().or_else(niri_focused)?;
+    let item = match extra_kind() {
+        ExtraKind::Hypr => hypr_active(),
+        ExtraKind::Niri => niri_focused(),
+        _ => None,
+    }?;
     if let Ok(mut rects) = extra_rects().lock() {
         remember_rect(&mut rects, &item);
     }
@@ -173,7 +210,21 @@ fn push_window(
 }
 
 fn atspi_windows() -> Vec<DisplayInfo> {
-    atspi_windows_inner().unwrap_or_default()
+    static LAST_FAIL: Mutex<Option<Instant>> = Mutex::new(None);
+    if let Ok(fail) = LAST_FAIL.lock() {
+        if fail.is_some_and(|at| at.elapsed() < Duration::from_secs(8)) {
+            return Vec::new();
+        }
+    }
+    match atspi_windows_inner() {
+        Ok(out) => out,
+        Err(_) => {
+            if let Ok(mut fail) = LAST_FAIL.lock() {
+                *fail = Some(Instant::now());
+            }
+            Vec::new()
+        }
+    }
 }
 
 fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {

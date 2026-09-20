@@ -1,3 +1,6 @@
+use std::sync::OnceLock;
+use std::time::Duration;
+
 use base64::Engine;
 use tauri::{AppHandle, Emitter};
 
@@ -32,15 +35,16 @@ pub async fn complete(
     }
     let user_text = xml_message("user", "claire", &inner);
     let history = tagged_history(history);
-    let owned = with_xml_instructions(settings, thread_context);
-    let settings = &owned;
+    let system = composed_system_prompt(settings, thread_context);
     let used_vision = image_png.is_some();
     let answer = match settings.provider {
         Provider::Anthropic => {
-            stream_anthropic(app, settings, &history, &user_text, image_png).await?
+            stream_anthropic(app, settings, &system, &history, &user_text, image_png).await?
         }
-        Provider::Ollama => stream_ollama(app, settings, &history, &user_text, image_png).await?,
-        _ => stream_openai(app, settings, &history, &user_text, image_png).await?,
+        Provider::Ollama => {
+            stream_ollama(app, settings, &system, &history, &user_text, image_png).await?
+        }
+        _ => stream_openai(app, settings, &system, &history, &user_text, image_png).await?,
     };
     Ok(LlmResult {
         answer,
@@ -93,8 +97,7 @@ fn tagged_history(history: &[ChatMessage]) -> Vec<ChatMessage> {
         .collect()
 }
 
-fn with_xml_instructions(settings: &Settings, thread_context: Option<&str>) -> Settings {
-    let mut next = settings.clone();
+fn composed_system_prompt(settings: &Settings, thread_context: Option<&str>) -> String {
     let mut prompt = format!(
         "{}\n\n{}\n\nConversation turns are XML messages with sender and recipient attributes.\n\
          User messages: <message sender=\"user\" recipient=\"claire\">…</message>\n\
@@ -109,8 +112,7 @@ fn with_xml_instructions(settings: &Settings, thread_context: Option<&str>) -> S
             ctx.trim()
         ));
     }
-    next.system_prompt = prompt;
-    next
+    prompt
 }
 
 const CONTEXT_SYSTEM: &str = "You maintain a compact running context for a desktop assistant conversation. Update the thread context so a later model can continue without the full transcript. Keep names, goals, decisions, facts, and unfinished tasks. Drop chit-chat. At most 250 words. Return only the updated context.";
@@ -134,11 +136,14 @@ pub async fn update_thread_context(
     complete_plain(settings, CONTEXT_SYSTEM, &user).await
 }
 
-fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|err| err.to_string())
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()
+            .expect("http client")
+    })
 }
 
 async fn ensure_ok(response: reqwest::Response, kind: &str) -> Result<reqwest::Response, String> {
@@ -182,14 +187,14 @@ fn b64(bytes: &[u8]) -> String {
 }
 
 fn openai_style_messages(
-    settings: &Settings,
+    system: &str,
     history: &[ChatMessage],
     user_text: &str,
     image_png: Option<&[u8]>,
 ) -> Vec<serde_json::Value> {
     let mut messages = vec![serde_json::json!({
         "role": "system",
-        "content": settings.system_prompt,
+        "content": system,
     })];
     for turn in history {
         messages.push(serde_json::json!({
@@ -220,17 +225,18 @@ fn openai_style_messages(
 async fn stream_openai(
     app: &AppHandle,
     settings: &Settings,
+    system: &str,
     history: &[ChatMessage],
     user_text: &str,
     image_png: Option<&[u8]>,
 ) -> Result<String, String> {
     let (base, key, model) = openai_endpoint(settings)?;
-    let mut req = client()?
+    let mut req = client()
         .post(format!("{base}/chat/completions"))
         .json(&serde_json::json!({
             "model": model,
             "stream": true,
-            "messages": openai_style_messages(settings, history, user_text, image_png),
+            "messages": openai_style_messages(system, history, user_text, image_png),
         }));
     if !key.is_empty() {
         req = req.bearer_auth(key);
@@ -243,6 +249,7 @@ async fn stream_openai(
 async fn stream_anthropic(
     app: &AppHandle,
     settings: &Settings,
+    system: &str,
     history: &[ChatMessage],
     user_text: &str,
     image_png: Option<&[u8]>,
@@ -267,7 +274,7 @@ async fn stream_anthropic(
     user_content.push(serde_json::json!({"type": "text", "text": user_text}));
     messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
-    let response = client()?
+    let response = client()
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &settings.anthropic_api_key)
         .header("anthropic-version", "2023-06-01")
@@ -275,7 +282,7 @@ async fn stream_anthropic(
             "model": settings.anthropic_model,
             "max_tokens": 2048,
             "stream": true,
-            "system": settings.system_prompt,
+            "system": system,
             "messages": messages,
         }))
         .send()
@@ -298,6 +305,7 @@ async fn stream_anthropic(
 async fn stream_ollama(
     app: &AppHandle,
     settings: &Settings,
+    system: &str,
     history: &[ChatMessage],
     user_text: &str,
     image_png: Option<&[u8]>,
@@ -308,7 +316,7 @@ async fn stream_ollama(
     }
     let mut messages = vec![serde_json::json!({
         "role": "system",
-        "content": settings.system_prompt,
+        "content": system,
     })];
     for turn in history {
         messages.push(serde_json::json!({
@@ -322,7 +330,7 @@ async fn stream_ollama(
     }
     messages.push(user);
 
-    let response = client()?
+    let response = client()
         .post(format!("{base}/api/chat"))
         .json(&serde_json::json!({
             "model": settings.ollama_model,
@@ -389,7 +397,7 @@ fn default_compat_base(provider: Provider) -> &'static str {
 
 async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
     let (base, key, model) = openai_endpoint(settings)?;
-    let mut req = client()?
+    let mut req = client()
         .post(format!("{base}/chat/completions"))
         .json(&serde_json::json!({
             "model": model,
@@ -415,7 +423,7 @@ async fn plain_anthropic(settings: &Settings, system: &str, user: &str) -> Resul
     if settings.anthropic_api_key.is_empty() {
         return Err("Missing Anthropic API key".into());
     }
-    let response = client()?
+    let response = client()
         .post("https://api.anthropic.com/v1/messages")
         .header("x-api-key", &settings.anthropic_api_key)
         .header("anthropic-version", "2023-06-01")
@@ -456,7 +464,7 @@ async fn plain_ollama(settings: &Settings, system: &str, user: &str) -> Result<S
     if settings.ollama_model.is_empty() {
         return Err("Missing Ollama model".into());
     }
-    let response = client()?
+    let response = client()
         .post(format!("{base}/api/chat"))
         .json(&serde_json::json!({
             "model": settings.ollama_model,
@@ -488,6 +496,10 @@ async fn plain_ollama(settings: &Settings, system: &str, user: &str) -> Result<S
     }
 }
 
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
 async fn collect_sse<F>(
     app: &AppHandle,
     response: reqwest::Response,
@@ -498,13 +510,13 @@ where
 {
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut answer = String::new();
     while let Some(chunk) = stream.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk.map_err(|err| err.to_string())?));
-        while let Some(idx) = buffer.find("\n\n") {
-            let event = buffer[..idx].to_string();
-            buffer = buffer[idx + 2..].to_string();
+        buffer.extend_from_slice(&chunk.map_err(|err| err.to_string())?);
+        while let Some(idx) = find_bytes(&buffer, b"\n\n") {
+            let event = String::from_utf8_lossy(&buffer[..idx]).into_owned();
+            buffer.drain(..idx + 2);
             for line in event.lines() {
                 let line = line.trim();
                 if !line.starts_with("data:") {
@@ -532,24 +544,24 @@ where
 async fn collect_ndjson(app: &AppHandle, response: reqwest::Response) -> Result<String, String> {
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut answer = String::new();
     while let Some(chunk) = stream.next().await {
-        buffer.push_str(&String::from_utf8_lossy(&chunk.map_err(|err| err.to_string())?));
-        while let Some(idx) = buffer.find('\n') {
-            let line = buffer[..idx].trim().to_string();
-            buffer = buffer[idx + 1..].to_string();
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) {
-                if let Some(token) = value.pointer("/message/content").and_then(|v| v.as_str()) {
-                    if !token.is_empty() {
-                        answer.push_str(token);
-                        let _ = app.emit("claire://token", token.to_string());
+        buffer.extend_from_slice(&chunk.map_err(|err| err.to_string())?);
+        while let Some(idx) = find_bytes(&buffer, b"\n") {
+            let line = String::from_utf8_lossy(&buffer[..idx]);
+            let line = line.trim();
+            if !line.is_empty() {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+                    if let Some(token) = value.pointer("/message/content").and_then(|v| v.as_str()) {
+                        if !token.is_empty() {
+                            answer.push_str(token);
+                            let _ = app.emit("claire://token", token.to_string());
+                        }
                     }
                 }
             }
+            buffer.drain(..idx + 1);
         }
     }
     if answer.is_empty() {

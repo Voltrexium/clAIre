@@ -1,10 +1,8 @@
 use std::sync::OnceLock;
 
-pub fn xml_block() -> String {
+pub fn xml_block() -> &'static str {
     static BLOCK: OnceLock<String> = OnceLock::new();
-    BLOCK
-        .get_or_init(|| format!("<specs>\n{}\n</specs>", collect().trim()))
-        .clone()
+    BLOCK.get_or_init(|| format!("<specs>\n{}\n</specs>", collect().trim()))
 }
 
 fn collect() -> String {

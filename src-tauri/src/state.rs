@@ -1,6 +1,6 @@
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::ImageEncoder;
-use std::sync::Mutex;
+use std::sync::{atomic::AtomicU64, Arc, Mutex};
 
 use base64::Engine;
 use serde::Serialize;
@@ -70,12 +70,12 @@ pub struct ChatMessage {
 pub struct AppState {
     pub settings: Mutex<Settings>,
     pub session: Mutex<Session>,
-    pub latest_capture: Mutex<Option<Capture>>,
+    pub latest_capture: Mutex<Option<Arc<Capture>>>,
     pub pinned_current: Mutex<Option<(Option<u32>, String)>>,
     pub context_gate: tokio::sync::Mutex<()>,
     pub expanded: Mutex<bool>,
     pub overlay_hidden: Mutex<bool>,
-    pub watch_gen: std::sync::atomic::AtomicU64,
+    pub watch_gen: AtomicU64,
 }
 
 impl Default for AppState {
@@ -88,7 +88,7 @@ impl Default for AppState {
             context_gate: tokio::sync::Mutex::new(()),
             expanded: Mutex::new(false),
             overlay_hidden: Mutex::new(true),
-            watch_gen: std::sync::atomic::AtomicU64::new(0),
+            watch_gen: AtomicU64::new(0),
         }
     }
 }

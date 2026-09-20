@@ -1,4 +1,6 @@
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow};
@@ -203,24 +205,25 @@ fn bump_watch_gen(app: &AppHandle) -> u64 {
 }
 
 pub fn start_active_watch(app: AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    if let Err(err) = std::thread::Builder::new()
+        .name("claire-watch".into())
+        .spawn(move || loop {
+            let hidden = overlay_hidden(&app);
+            std::thread::sleep(Duration::from_millis(if hidden { 750 } else { 220 }));
             if overlay_hidden(&app) {
                 continue;
             }
-            let current_mode = app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .ok()
-                .is_some_and(|settings| settings.capture_mode == CaptureMode::Current);
+            let (current_mode, max_width) = match app.state::<AppState>().settings.lock() {
+                Ok(settings) => (
+                    settings.capture_mode == CaptureMode::Current,
+                    settings.downscale_max_width,
+                ),
+                Err(_) => continue,
+            };
             if !current_mode {
                 continue;
             }
-            let Ok(peek) = run_blocking(|| Ok(capture::peek_active())).await else {
-                continue;
-            };
+            let peek = capture::peek_active();
             if peek.id.is_none() {
                 continue;
             }
@@ -241,12 +244,6 @@ pub fn start_active_watch(app: AppHandle) {
                 continue;
             }
             let gen = bump_watch_gen(&app);
-            let max_width = app
-                .state::<AppState>()
-                .settings
-                .lock()
-                .map(|settings| settings.downscale_max_width)
-                .unwrap_or(1280);
             let work_app = app.clone();
             let target = peek.clone();
             tauri::async_runtime::spawn(async move {
@@ -265,8 +262,10 @@ pub fn start_active_watch(app: AppHandle) {
                     }
                 }
             });
-        }
-    });
+        })
+    {
+        eprintln!("clAIre watch: {err}");
+    }
 }
 
 fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
@@ -280,17 +279,13 @@ fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
     target
 }
 
-fn persist_capture_result(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+    let capture = Arc::new(capture);
     let payload = capture.to_payload();
     *app.state::<AppState>()
         .latest_capture
         .lock()
-        .map_err(|err| err.to_string())? = Some(capture);
-    Ok(payload)
-}
-
-fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
-    let payload = persist_capture_result(app, capture.clone())?;
+        .map_err(|err| err.to_string())? = Some(Arc::clone(&capture));
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _ = storage::persist_capture(&app, &capture);
@@ -668,7 +663,7 @@ pub async fn ask_claire(
         return Err("Query is empty".into());
     }
 
-    let (mut settings, history, thread_context, png, windows, epoch) = {
+    let (mut settings, history, thread_context, shot, epoch) = {
         let state = app.state::<AppState>();
         let settings = lock_settings(&state)?;
         let session = state.session.lock().map_err(|err| err.to_string())?;
@@ -683,12 +678,18 @@ pub async fn ask_claire(
         } else {
             None
         };
-        let (png, windows) = match state.latest_capture.lock().map_err(|err| err.to_string())?.as_ref() {
-            Some(capture) => (Some(capture.png.clone()), capture.windows.clone()),
-            None => (None, Vec::new()),
-        };
-        (settings, history, thread_context, png, windows, session.epoch)
+        let shot = state
+            .latest_capture
+            .lock()
+            .map_err(|err| err.to_string())?
+            .clone();
+        (settings, history, thread_context, shot, session.epoch)
     };
+    let png = shot.as_ref().map(|capture| capture.png.as_slice());
+    let windows = shot
+        .as_ref()
+        .map(|capture| capture.windows.as_slice())
+        .unwrap_or(&[]);
 
     let want_search = include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
     let mut used_search = false;
@@ -742,8 +743,8 @@ pub async fn ask_claire(
         &history,
         thread_context.as_deref(),
         &query,
-        png.as_deref(),
-        &windows,
+        png,
+        windows,
         search_block.as_deref(),
     )
     .await

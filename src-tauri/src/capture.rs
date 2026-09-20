@@ -1,3 +1,6 @@
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use image::{imageops, RgbaImage};
 use serde::Serialize;
 use xcap::{Monitor, Window};
@@ -30,13 +33,28 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
 }
 
 fn list_windows_info() -> Result<Vec<DisplayInfo>, String> {
+    if let Ok(cache) = window_list_cache().lock() {
+        if let Some((at, items)) = cache.as_ref() {
+            if at.elapsed() < Duration::from_millis(250) {
+                return Ok(items.clone());
+            }
+        }
+    }
     #[cfg(target_os = "linux")]
     let mut out = linux_list_windows();
     #[cfg(not(target_os = "linux"))]
     let mut out = Vec::new();
     let xcap_list = xcap_list_windows().unwrap_or_default();
     out = merge_window_lists(out, xcap_list);
+    if let Ok(mut cache) = window_list_cache().lock() {
+        *cache = Some((Instant::now(), out.clone()));
+    }
     Ok(out)
+}
+
+fn window_list_cache() -> &'static Mutex<Option<(Instant, Vec<DisplayInfo>)>> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, Vec<DisplayInfo>)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
 }
 
 fn xcap_list_windows() -> Result<Vec<DisplayInfo>, String> {
@@ -195,10 +213,11 @@ pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
     }
     let windows = Window::all().unwrap_or_default();
     let monitors = Monitor::all().unwrap_or_default();
+    let listed = list_windows_info().unwrap_or_default();
     let mut tiles = Vec::new();
     let mut errors = Vec::new();
     for id in unique {
-        match capture_id(&windows, &monitors, id) {
+        match capture_id(&windows, &monitors, &listed, id) {
             Ok((shot, image)) => tiles.push((0, 0, image, shot)),
             Err(err) => errors.push(err),
         }
@@ -220,11 +239,10 @@ pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
 fn capture_id(
     windows: &[Window],
     monitors: &[Monitor],
+    listed: &[DisplayInfo],
     id: u32,
 ) -> Result<(WindowShot, RgbaImage), String> {
-    let listed = list_windows_info()
-        .ok()
-        .and_then(|list| list.into_iter().find(|item| item.id == id));
+    let listed = listed.iter().find(|item| item.id == id).cloned();
     let listed_shot = || shot_from_listed(&listed, id);
 
     #[cfg(target_os = "linux")]
@@ -336,16 +354,6 @@ fn pick_current(windows: &[Window]) -> Option<&Window> {
     } else {
         usable
     };
-    #[cfg(target_os = "linux")]
-    if let Some(item) = linux_list_windows().into_iter().find(|item| item.current) {
-        if let Some(window) = pool
-            .iter()
-            .copied()
-            .find(|window| window.id().ok() == Some(item.id) && !is_ours(window))
-        {
-            return Some(window);
-        }
-    }
     pool.iter()
         .copied()
         .find(|window| window.is_focused().unwrap_or(false) && !is_ours(window))
@@ -522,17 +530,74 @@ fn stitch_layout(tiles: Vec<(i32, i32, RgbaImage)>) -> RgbaImage {
 }
 
 #[cfg(target_os = "linux")]
+struct X11 {
+    conn: xcb::Connection,
+    client_list: Option<xcb::x::Atom>,
+    client_list_stacking: Option<xcb::x::Atom>,
+    net_wm_name: Option<xcb::x::Atom>,
+    utf8: Option<xcb::x::Atom>,
+    wm_state: Option<xcb::x::Atom>,
+    hidden: Option<xcb::x::Atom>,
+    active: Option<xcb::x::Atom>,
+}
+
+#[cfg(target_os = "linux")]
+fn x11() -> Result<std::sync::MutexGuard<'static, X11>, String> {
+    static SLOT: OnceLock<Mutex<X11>> = OnceLock::new();
+    if let Some(slot) = SLOT.get() {
+        return slot.lock().map_err(|err| err.to_string());
+    }
+    let connected = X11::connect()?;
+    let _ = SLOT.set(Mutex::new(connected));
+    SLOT.get()
+        .ok_or_else(|| "X11 connection unavailable".to_string())?
+        .lock()
+        .map_err(|err| err.to_string())
+}
+
+#[cfg(target_os = "linux")]
+impl X11 {
+    fn connect() -> Result<Self, String> {
+        use xcb::x::InternAtom;
+        use xcb::Xid;
+
+        let display = std::env::var("DISPLAY").ok();
+        let (conn, _) = xcb::Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
+        let intern = |conn: &xcb::Connection, name: &str| -> Option<xcb::x::Atom> {
+            let cookie = conn.send_request(&InternAtom {
+                only_if_exists: true,
+                name: name.as_bytes(),
+            });
+            let reply = conn.wait_for_reply(cookie).ok()?;
+            if reply.atom().is_none() {
+                None
+            } else {
+                Some(reply.atom())
+            }
+        };
+        Ok(Self {
+            client_list_stacking: intern(&conn, "_NET_CLIENT_LIST_STACKING"),
+            client_list: intern(&conn, "_NET_CLIENT_LIST"),
+            net_wm_name: intern(&conn, "_NET_WM_NAME"),
+            utf8: intern(&conn, "UTF8_STRING"),
+            wm_state: intern(&conn, "_NET_WM_STATE"),
+            hidden: intern(&conn, "_NET_WM_STATE_HIDDEN"),
+            active: intern(&conn, "_NET_ACTIVE_WINDOW"),
+            conn,
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
-    use xcb::x::{
-        Drawable, GetGeometry, GetImage, ImageFormat, ImageOrder, Window as XWindow,
-    };
-    use xcb::{Connection, XidNew};
+    use xcb::x::{Drawable, GetGeometry, GetImage, ImageFormat, ImageOrder, Window as XWindow};
+    use xcb::XidNew;
 
     if id == 0 {
         return Err("Invalid window".into());
     }
-    let display = std::env::var("DISPLAY").ok();
-    let (conn, _) = Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
+    let x11 = x11()?;
+    let conn = &x11.conn;
     let window = XWindow::new(id);
     let geometry = conn.send_request(&GetGeometry {
         drawable: Drawable::Window(window),
@@ -599,24 +664,12 @@ fn linux_list_windows() -> Vec<DisplayInfo> {
 fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, String> {
     use xcb::x::{
         ATOM_ATOM, ATOM_NONE, ATOM_STRING, ATOM_WM_CLASS, ATOM_WM_NAME, Drawable, GetGeometry,
-        GetProperty, InternAtom, TranslateCoordinates, Window as XWindow,
+        GetProperty, TranslateCoordinates, Window as XWindow,
     };
-    use xcb::{Connection, Xid, XidNew};
+    use xcb::XidNew;
 
-    let display = std::env::var("DISPLAY").ok();
-    let (conn, _) = Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
-
-    let intern = |name: &str| -> Result<xcb::x::Atom, String> {
-        let cookie = conn.send_request(&InternAtom {
-            only_if_exists: true,
-            name: name.as_bytes(),
-        });
-        let reply = conn.wait_for_reply(cookie).map_err(|err| err.to_string())?;
-        if reply.atom().is_none() {
-            return Err(format!("{name} not supported"));
-        }
-        Ok(reply.atom())
-    };
+    let x11 = x11()?;
+    let conn = &x11.conn;
 
     let get_prop = |window: XWindow, property: xcb::x::Atom, r#type: xcb::x::Atom, len: u32| {
         let cookie = conn.send_request(&GetProperty {
@@ -633,13 +686,17 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     let client_list = if active_only {
         None
     } else {
-        Some(intern("_NET_CLIENT_LIST_STACKING").or_else(|_| intern("_NET_CLIENT_LIST"))?)
+        Some(
+            x11.client_list_stacking
+                .or(x11.client_list)
+                .ok_or_else(|| "_NET_CLIENT_LIST not supported".to_string())?,
+        )
     };
-    let net_wm_name = intern("_NET_WM_NAME").ok();
-    let utf8 = intern("UTF8_STRING").ok();
-    let wm_state = intern("_NET_WM_STATE").ok();
-    let hidden = intern("_NET_WM_STATE_HIDDEN").ok();
-    let active_atom = intern("_NET_ACTIVE_WINDOW").ok();
+    let net_wm_name = x11.net_wm_name;
+    let utf8 = x11.utf8;
+    let wm_state = x11.wm_state;
+    let hidden = x11.hidden;
+    let active_atom = x11.active;
 
     let mut ids = Vec::new();
     let mut active_id = None;
@@ -796,5 +853,5 @@ pub(crate) fn linux_is_shell(app: &str, title: &str, width: u32, height: u32) ->
     ];
     NAMES
         .iter()
-        .any(|name| app == *name || title == *name || app.ends_with(&format!(".{name}")))
+        .any(|name| app == *name || title == *name || app.rsplit('.').next() == Some(*name))
 }
