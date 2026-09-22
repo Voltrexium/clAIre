@@ -628,21 +628,21 @@ fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
         .ok_or_else(|| format!("Unsupported image depth {depth}"))?;
     let bits_per_pixel = pixmap_format.bits_per_pixel() as u32;
     let bit_order = setup.bitmap_format_bit_order();
-    let mut rgba = vec![0u8; width as usize * height as usize * 4];
-    for y in 0..height {
-        for x in 0..width {
-            let src = ((y * width + x) * bits_per_pixel / 8) as usize;
-            let dst = ((y * width + x) * 4) as usize;
-            let (r, g, b) = match (depth, bit_order) {
-                (24 | 32, ImageOrder::LsbFirst) => (bytes[src + 2], bytes[src + 1], bytes[src]),
-                (24 | 32, ImageOrder::MsbFirst) => (bytes[src], bytes[src + 1], bytes[src + 2]),
-                _ => return Err(format!("Unsupported image depth {depth}")),
-            };
-            rgba[dst] = r;
-            rgba[dst + 1] = g;
-            rgba[dst + 2] = b;
-            rgba[dst + 3] = 255;
-        }
+    let (r_off, g_off, b_off) = match (depth, bit_order) {
+        (24 | 32, ImageOrder::LsbFirst) => (2usize, 1, 0),
+        (24 | 32, ImageOrder::MsbFirst) => (0, 1, 2),
+        _ => return Err(format!("Unsupported image depth {depth}")),
+    };
+    let step = (bits_per_pixel / 8) as usize;
+    let count = (width as usize).saturating_mul(height as usize);
+    if step < 3 || bytes.len() < count.saturating_mul(step) {
+        return Err(format!("Unsupported image depth {depth}"));
+    }
+    let mut rgba = vec![255u8; count * 4];
+    for (src, dst) in bytes.chunks_exact(step).zip(rgba.chunks_exact_mut(4)).take(count) {
+        dst[0] = src[r_off];
+        dst[1] = src[g_off];
+        dst[2] = src[b_off];
     }
     RgbaImage::from_raw(width, height, rgba).ok_or_else(|| "Could not decode window image".into())
 }

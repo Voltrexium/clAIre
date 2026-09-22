@@ -11,7 +11,7 @@ export type Provider =
   | "fireworks"
   | "ollama"
   | "custom";
-export type CaptureMode = "current" | "all";
+export type CaptureMode = "none" | "current" | "all";
 
 export type SearchProvider = "tavily" | "brave" | "duckduckgo";
 
@@ -64,6 +64,8 @@ export interface DisplayInfo {
   height: number;
   primary: boolean;
   current: boolean;
+  app?: string;
+  title?: string;
 }
 
 export interface CapturePayload {

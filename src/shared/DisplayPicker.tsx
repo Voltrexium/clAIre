@@ -13,41 +13,33 @@ export default function DisplayPicker({
     return <p className="hint">No windows found.</p>;
   }
 
-  const selected = displays.filter((display) => selectedIds.includes(display.id));
-  const available = displays.filter((display) => !selectedIds.includes(display.id));
-
-  function list(items: DisplayInfo[], selectedList: boolean) {
-    return (
-      <ul className={selectedList ? "window-list selected" : "window-list available"}>
-        {items.map((display) => (
-          <li
-            key={`${display.id}-${display.name}-${display.x}-${display.y}`}
-            className={selectedList ? "window-row on" : "window-row"}
-          >
-            <button type="button" className="name" onClick={() => onToggle(display.id)}>
-              {display.name}
-              {display.current ? " · current" : ""}
-            </button>
-            {selectedList && (
-              <button
-                type="button"
-                className="remove"
-                aria-label={`Remove ${display.name}`}
-                onClick={() => onToggle(display.id)}
-              >
-                ×
-              </button>
-            )}
-          </li>
-        ))}
-      </ul>
-    );
-  }
+  const selected = new Set(selectedIds);
 
   return (
     <div className="window-picker">
-      {selected.length > 0 && list(selected, true)}
-      {available.length > 0 && list(available, false)}
+      <ul className="window-list">
+        {displays.map((display) => {
+          const on = selected.has(display.id);
+          return (
+            <li key={display.id} className={on ? "window-row on" : "window-row"}>
+              <button type="button" className="name" onClick={() => onToggle(display.id)}>
+                {display.name}
+                {display.current ? " · current" : ""}
+              </button>
+              {on && (
+                <button
+                  type="button"
+                  className="remove"
+                  aria-label={`Remove ${display.name}`}
+                  onClick={() => onToggle(display.id)}
+                >
+                  ×
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

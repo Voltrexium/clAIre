@@ -14,13 +14,13 @@
   margin-bottom: 10px;
 }
 
-header p,
+.settings-shell header p,
 .hint {
   color: var(--muted);
   margin: 6px 0 0;
 }
 
-section {
+.settings-shell section {
   background: var(--panel);
   border: 1px solid var(--card-border);
   border-radius: var(--radius);
@@ -32,7 +32,7 @@ section {
   margin-bottom: 0;
 }
 
-h2 {
+.settings-shell h2 {
   margin: 0 0 14px;
   font-size: 0.95rem;
   letter-spacing: 0.04em;

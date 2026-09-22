@@ -89,11 +89,12 @@ fn search_client() -> Result<&'static Client, String> {
 
 pub fn compact_cites(answer: &str, sources: &[SearchSource]) -> (String, Vec<SearchSource>) {
     let known: std::collections::HashSet<u32> = sources.iter().map(|source| source.index).collect();
+    let groups = cite_groups(answer);
     let mut used = std::collections::HashSet::new();
-    for (_, _, numbers) in cite_groups(answer) {
+    for (_, _, numbers) in &groups {
         for number in numbers {
-            if known.contains(&number) {
-                used.insert(number);
+            if known.contains(number) {
+                used.insert(*number);
             }
         }
     }
@@ -108,7 +109,7 @@ pub fn compact_cites(answer: &str, sources: &[SearchSource]) -> (String, Vec<Sea
         remap.insert(source.index, next);
         source.index = next;
     }
-    (rewrite_cites(answer, &remap), compact)
+    (rewrite_cites(answer, &groups, &remap), compact)
 }
 
 fn cite_groups(answer: &str) -> Vec<(usize, usize, Vec<u32>)> {
@@ -159,25 +160,29 @@ fn parse_cite_list(inner: &str) -> Option<Vec<u32>> {
     }
 }
 
-fn rewrite_cites(answer: &str, remap: &std::collections::HashMap<u32, u32>) -> String {
+fn rewrite_cites(
+    answer: &str,
+    groups: &[(usize, usize, Vec<u32>)],
+    remap: &std::collections::HashMap<u32, u32>,
+) -> String {
     if remap.is_empty() {
         return answer.to_string();
     }
     let mut out = String::with_capacity(answer.len());
     let mut last = 0;
-    for (start, end, numbers) in cite_groups(answer) {
+    for (start, end, numbers) in groups {
         let remapped: Vec<String> = numbers
-            .into_iter()
-            .filter_map(|number| remap.get(&number).map(|next| next.to_string()))
+            .iter()
+            .filter_map(|number| remap.get(number).map(|next| next.to_string()))
             .collect();
         if remapped.is_empty() {
             continue;
         }
-        out.push_str(&answer[last..start]);
+        out.push_str(&answer[last..*start]);
         out.push('[');
         out.push_str(&remapped.join(", "));
         out.push(']');
-        last = end;
+        last = *end;
     }
     out.push_str(&answer[last..]);
     out
@@ -244,18 +249,7 @@ async fn tavily_search(client: &Client, settings: &Settings, query: &str) -> Res
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    let hits = items
-        .iter()
-        .map(|item| Hit {
-            title: item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
-            url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            snippet: item
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
-        .collect();
+    let hits = items.iter().map(|item| hit_from_json(item, "content")).collect();
     let answer = payload
         .get("answer")
         .and_then(|value| value.as_str())
@@ -279,18 +273,15 @@ async fn brave_search(client: &Client, settings: &Settings, query: &str) -> Resu
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    Ok(items
-        .iter()
-        .map(|item| Hit {
-            title: item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
-            url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            snippet: item
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
-        .collect())
+    Ok(items.iter().map(|item| hit_from_json(item, "description")).collect())
+}
+
+fn hit_from_json(item: &Value, snippet_key: &str) -> Hit {
+    Hit {
+        title: item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
+        url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        snippet: item.get(snippet_key).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+    }
 }
 
 async fn duckduckgo_search(client: &Client, query: &str) -> Result<Vec<Hit>, String> {

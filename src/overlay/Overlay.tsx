@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -26,12 +26,223 @@ function usableLabel(mode?: string | null) {
   return mode;
 }
 
+function stabilizeDisplays(prev: DisplayInfo[], next: DisplayInfo[]) {
+  if (prev.length === 0) return next;
+  const byId = new Map(next.map((display) => [display.id, display]));
+  const seen = new Set<number>();
+  const out: DisplayInfo[] = [];
+  for (const item of prev) {
+    const fresh = byId.get(item.id);
+    if (!fresh || seen.has(item.id)) continue;
+    out.push(fresh);
+    seen.add(item.id);
+  }
+  for (const item of next) {
+    if (seen.has(item.id)) continue;
+    out.push(item);
+    seen.add(item.id);
+  }
+  return out;
+}
+
 type LogEntry = {
   role: "user" | "assistant";
   content: string;
   image?: string;
   imageAlt?: string;
 };
+
+const EMPTY_SOURCES: SearchSource[] = [];
+
+function pinTurn(scroller: HTMLElement, turn: HTMLElement) {
+  const sRect = scroller.getBoundingClientRect();
+  const qRect = turn.getBoundingClientRect();
+  const cap = Math.max(88, scroller.clientHeight * 0.3);
+  if (qRect.height <= cap) {
+    scroller.scrollTop += qRect.top - sRect.top;
+  } else {
+    scroller.scrollTop += qRect.bottom - cap - sRect.top;
+  }
+}
+
+function followAnswer(scroller: HTMLElement, answer: HTMLElement) {
+  const sRect = scroller.getBoundingClientRect();
+  const aRect = answer.getBoundingClientRect();
+  if (aRect.bottom > sRect.bottom - 8) {
+    scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
+  }
+}
+
+function setFenceCopied(button: HTMLElement, copied: boolean) {
+  button.classList.toggle("is-copied", copied);
+  const label = copied ? "Copied" : "Copy";
+  button.textContent = label;
+  button.title = label;
+  button.setAttribute("aria-label", copied ? "Copied" : "Copy code");
+}
+
+async function writeClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+}
+
+type ChatTurnProps = {
+  entry: LogEntry;
+  index: number;
+  isLastAssistant: boolean;
+  isFirstUser: boolean;
+  isLatestUser: boolean;
+  clampQuery: boolean;
+  queryCap: number;
+  queryExpanded: boolean;
+  showClamp: boolean;
+  copied: boolean;
+  busy: boolean;
+  askStatus: AskStatus | null;
+  usedVision: boolean;
+  usedSearch: boolean;
+  usedSearchApi: string;
+  searchSources: SearchSource[];
+  latestUserRef: React.MutableRefObject<HTMLElement | null>;
+  latestAssistantRef: React.MutableRefObject<HTMLElement | null>;
+  onOpenPreview: (src: string, alt: string) => void;
+  onToggleQuery: () => void;
+  onCopyOutput: (index: number, text: string) => void;
+  onAnswerClick: (event: React.MouseEvent<HTMLDivElement>) => void;
+};
+
+const ChatTurn = memo(function ChatTurn({
+  entry,
+  index,
+  isLastAssistant,
+  isFirstUser,
+  isLatestUser,
+  clampQuery,
+  queryCap,
+  queryExpanded,
+  showClamp,
+  copied,
+  busy,
+  askStatus,
+  usedVision,
+  usedSearch,
+  usedSearchApi,
+  searchSources,
+  latestUserRef,
+  latestAssistantRef,
+  onOpenPreview,
+  onToggleQuery,
+  onCopyOutput,
+  onAnswerClick,
+}: ChatTurnProps) {
+  const html = useMemo(() => (entry.content ? renderLiteMarkdown(entry.content) : ""), [entry.content]);
+  return (
+    <article
+      className={entry.role === "user" ? "turn user" : "turn assistant"}
+      ref={(node) => {
+        if (isLatestUser) latestUserRef.current = node;
+        else if (latestUserRef.current === node) latestUserRef.current = null;
+        if (isLastAssistant) latestAssistantRef.current = node;
+        else if (latestAssistantRef.current === node) latestAssistantRef.current = null;
+      }}
+    >
+      {entry.role === "assistant" && (
+        <div className="turn-avatar" aria-hidden>
+          AI
+        </div>
+      )}
+      <div className="turn-body">
+        {isFirstUser && entry.image && (
+          <button
+            className="log-shot"
+            type="button"
+            title="Open screenshot"
+            onClick={() => onOpenPreview(entry.image!, entry.imageAlt || "Captured window")}
+          >
+            <img src={entry.image} alt={entry.imageAlt || "Captured window"} />
+          </button>
+        )}
+        {html ? (
+          entry.role === "assistant" ? (
+            <div className="assistant-output">
+              <div className="answer-body" onClick={onAnswerClick} dangerouslySetInnerHTML={{ __html: html }} />
+              <button
+                className="copy-output"
+                type="button"
+                title={copied ? "Copied" : "Copy response"}
+                aria-label={copied ? "Copied" : "Copy response"}
+                onClick={() => void onCopyOutput(index, entry.content)}
+              >
+                {copied ? (
+                  <svg viewBox="0 0 24 24" aria-hidden>
+                    <path d="M20 6 9 17l-5-5" />
+                  </svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" aria-hidden>
+                    <rect x="9" y="9" width="13" height="13" rx="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
+              </button>
+            </div>
+          ) : (
+            <div
+              className={clampQuery ? "answer-body clamped" : "answer-body"}
+              style={clampQuery ? { maxHeight: queryCap } : undefined}
+              onClick={onAnswerClick}
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
+          )
+        ) : null}
+        {showClamp && (
+          <button className="show-more" type="button" onClick={onToggleQuery}>
+            {queryExpanded ? "Show less" : "Show full question"}
+          </button>
+        )}
+        {busy && isLastAssistant && (
+          <div className="ask-status" aria-live="polite">
+            <span className="ask-status-orb" />
+            <strong>{askStatus?.api || "clAIre"}</strong>
+            <span>{askStatus?.detail || (entry.content ? "streaming" : "thinking")}</span>
+            <div className="typing" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
+        )}
+        {isLastAssistant && (usedVision || usedSearch) && (
+          <div className="turn-tags">
+            {usedVision && <em>vision</em>}
+            {usedSearch && <em>{usedSearchApi || "web"}</em>}
+          </div>
+        )}
+        {isLastAssistant && usedSearch && searchSources.length > 0 && (
+          <ol className="search-cites">
+            {searchSources.map((source) => (
+              <li key={`${source.index}-${source.url}`}>
+                <button type="button" className="cite-link" title={source.url} onClick={() => void openUrl(source.url)}>
+                  {source.title}
+                </button>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </article>
+  );
+});
 
 export default function Overlay() {
   const [query, setQuery] = useState("");
@@ -72,8 +283,8 @@ export default function Overlay() {
   const ignoreScrollRef = useRef(false);
   const latestUserRef = useRef<HTMLElement | null>(null);
   const latestAssistantRef = useRef<HTMLElement | null>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
   const chatLogRef = useRef<HTMLElement | null>(null);
+  const scrollerWrapRef = useRef<HTMLDivElement>(null);
   const windowListBusy = useRef(false);
   const tokenBuf = useRef("");
   const tokenTimer = useRef(0);
@@ -81,15 +292,14 @@ export default function Overlay() {
   const applyFitRef = useRef<() => void>(() => {});
   const [stayOpen, setStayOpen] = useState(false);
   const [showJump, setShowJump] = useState(false);
-  const [fadeTop, setFadeTop] = useState(false);
-  const [fadeBottom, setFadeBottom] = useState(false);
   const [queryExpanded, setQueryExpanded] = useState(false);
   const [queryNeedsClamp, setQueryNeedsClamp] = useState(false);
   const [queryCap, setQueryCap] = useState(120);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const copiedTimer = useRef(0);
-  const expanded =
-    showSettings || log.length > 0 || captureMode === "all" || stayOpen;
+  const copiedSnippetTimer = useRef(0);
+  const copiedFenceBtn = useRef<HTMLElement | null>(null);
+  const expanded = showSettings || log.length > 0 || stayOpen;
 
   const closeSettings = useCallback(() => {
     showSettingsRef.current = false;
@@ -131,26 +341,31 @@ export default function Overlay() {
     }
   }, []);
 
-  const resetAsk = useCallback(() => {
+  const clearTurnMeta = useCallback(() => {
     dropTokens();
     followRef.current = false;
     pinQueryRef.current = false;
     setShowJump(false);
-    setFadeTop(false);
-    setFadeBottom(false);
+    scrollerWrapRef.current?.classList.remove("fade-top", "fade-bottom");
     setQueryExpanded(false);
     setQueryNeedsClamp(false);
-    setLog([]);
-    setQuery("");
     setError(null);
-    setBusy(false);
-    setConfirmClear(false);
     setUsedSearch(false);
     setUsedSearchApi("");
     setSearchSources([]);
     setUsedVision(false);
     setAskStatus(null);
+    window.clearTimeout(copiedSnippetTimer.current);
+    copiedFenceBtn.current = null;
   }, [dropTokens]);
+
+  const resetAsk = useCallback(() => {
+    clearTurnMeta();
+    setLog([]);
+    setQuery("");
+    setBusy(false);
+    setConfirmClear(false);
+  }, [clearTurnMeta]);
 
   function startDrag(event: React.MouseEvent) {
     if ((event.target as HTMLElement).closest("button")) return;
@@ -196,6 +411,10 @@ export default function Overlay() {
       };
 
       await add<CapturePayload>("claire://capture", (payload) => {
+        if (captureModeRef.current === "none") {
+          finishCaptureWait();
+          return;
+        }
         captureStale.current = false;
         captureRef.current = payload;
         setCapture(payload);
@@ -295,14 +514,9 @@ export default function Overlay() {
       window.removeEventListener("keydown", onKey);
       window.clearTimeout(debounceRef.current);
       window.clearTimeout(copiedTimer.current);
+      window.clearTimeout(copiedSnippetTimer.current);
     };
   }, [beginCaptureWait, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, resetAsk]);
-
-  function openPreview(src: string, alt: string) {
-    const next = { src, alt };
-    previewRef.current = next;
-    setPreview(next);
-  }
 
   function closePreview() {
     previewRef.current = null;
@@ -314,7 +528,7 @@ export default function Overlay() {
     windowListBusy.current = true;
     void listDisplays()
       .then((next) => {
-        setDisplays(next);
+        setDisplays((prev) => stabilizeDisplays(prev, next));
         const alive = new Set(next.map((display) => display.id));
         const ids = selectedIdsRef.current.filter((id) => alive.has(id));
         if (ids.length !== selectedIdsRef.current.length) {
@@ -365,6 +579,19 @@ export default function Overlay() {
     captureModeRef.current = next;
     setCaptureMode(next);
     window.clearTimeout(debounceRef.current);
+    if (next === "none") {
+      captureGen.current += 1;
+      selectedIdsRef.current = [];
+      setSelectedIds([]);
+      pinWindowIdRef.current = null;
+      captureStale.current = false;
+      captureRef.current = null;
+      setCapture(null);
+      setWindowLabel("");
+      finishCaptureWait();
+      void persistCaptureMode("none", []);
+      return;
+    }
     if (next === "current") {
       const picked = selectedIdsRef.current;
       if (picked.length === 1) {
@@ -382,7 +609,6 @@ export default function Overlay() {
       void refreshCapture();
       return;
     }
-    setStayOpen(true);
     captureStale.current = true;
     void persistCaptureMode("all", selectedIdsRef.current);
     refreshWindowList();
@@ -407,25 +633,14 @@ export default function Overlay() {
       const scroller = chatLogRef.current;
       const turn = latestUserRef.current;
       if (!scroller || !turn) return;
-      const sRect = scroller.getBoundingClientRect();
-      const qRect = turn.getBoundingClientRect();
-      const cap = Math.max(88, scroller.clientHeight * 0.3);
-      if (qRect.height <= cap) {
-        scroller.scrollTop += qRect.top - sRect.top;
-      } else {
-        scroller.scrollTop += qRect.bottom - cap - sRect.top;
-      }
+      pinTurn(scroller, turn);
     };
 
-    const followAnswer = () => {
+    const followLatest = () => {
       const scroller = chatLogRef.current;
       const answer = latestAssistantRef.current;
       if (!scroller || !answer) return;
-      const sRect = scroller.getBoundingClientRect();
-      const aRect = answer.getBoundingClientRect();
-      if (aRect.bottom > sRect.bottom - 8) {
-        scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
-      }
+      followAnswer(scroller, answer);
     };
 
     const restore = () => {
@@ -439,7 +654,7 @@ export default function Overlay() {
       });
       ignoreScrollRef.current = true;
       if (pinQueryRef.current) pinLatestQuery();
-      else if (followRef.current) followAnswer();
+      else if (followRef.current) followLatest();
       requestAnimationFrame(() => {
         ignoreScrollRef.current = false;
       });
@@ -544,17 +759,17 @@ export default function Overlay() {
 
   const updateChatChrome = useCallback(() => {
     const scroller = chatLogRef.current;
-    if (!scroller) {
-      setFadeTop(false);
-      setFadeBottom(false);
+    const wrap = scrollerWrapRef.current;
+    if (!scroller || !wrap) {
       setShowJump(false);
       return;
     }
     const top = scroller.scrollTop > 6;
     const bottom = scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 6;
-    setFadeTop(top);
-    setFadeBottom(bottom);
-    setShowJump(!followRef.current && bottom);
+    wrap.classList.toggle("fade-top", top);
+    wrap.classList.toggle("fade-bottom", bottom);
+    const nextJump = !followRef.current && bottom;
+    setShowJump((current) => (current === nextJump ? current : nextJump));
   }, []);
 
   const alignThread = useCallback(
@@ -564,25 +779,10 @@ export default function Overlay() {
       ignoreScrollRef.current = true;
       if (mode === "pin") {
         const turn = latestUserRef.current;
-        if (turn) {
-          const sRect = scroller.getBoundingClientRect();
-          const qRect = turn.getBoundingClientRect();
-          const cap = Math.max(88, scroller.clientHeight * 0.3);
-          if (qRect.height <= cap) {
-            scroller.scrollTop += qRect.top - sRect.top;
-          } else {
-            scroller.scrollTop += qRect.bottom - cap - sRect.top;
-          }
-        }
+        if (turn) pinTurn(scroller, turn);
       }
       const answer = latestAssistantRef.current;
-      if (answer && followRef.current) {
-        const sRect = scroller.getBoundingClientRect();
-        const aRect = answer.getBoundingClientRect();
-        if (aRect.bottom > sRect.bottom - 8) {
-          scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
-        }
-      }
+      if (answer && followRef.current) followAnswer(scroller, answer);
       requestAnimationFrame(() => {
         ignoreScrollRef.current = false;
         updateChatChrome();
@@ -652,24 +852,50 @@ export default function Overlay() {
     alignThread("pin");
   }
 
-  async function copyOutput(index: number, text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.left = "-9999px";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-    }
+  const copyOutput = useCallback(async (index: number, text: string) => {
+    await writeClipboard(text);
     setCopiedIndex(index);
     window.clearTimeout(copiedTimer.current);
     copiedTimer.current = window.setTimeout(() => setCopiedIndex(null), 1500);
-  }
+  }, []);
+
+  const onAnswerClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    const copyBtn = target.closest<HTMLElement>(".copy-code");
+    if (copyBtn) {
+      event.preventDefault();
+      const text = copyBtn.closest(".md-code")?.querySelector("code")?.textContent ?? "";
+      void (async () => {
+        await writeClipboard(text);
+        const prev = copiedFenceBtn.current;
+        if (prev && prev !== copyBtn && prev.isConnected) setFenceCopied(prev, false);
+        setFenceCopied(copyBtn, true);
+        copiedFenceBtn.current = copyBtn;
+        window.clearTimeout(copiedSnippetTimer.current);
+        copiedSnippetTimer.current = window.setTimeout(() => {
+          const button = copiedFenceBtn.current;
+          copiedFenceBtn.current = null;
+          if (button?.isConnected) setFenceCopied(button, false);
+        }, 1500);
+      })();
+      return;
+    }
+    const link = target.closest("a");
+    if (!link) return;
+    event.preventDefault();
+    const href = link.getAttribute("href");
+    if (href) void openUrl(href);
+  }, []);
+
+  const openPreview = useCallback((src: string, alt: string) => {
+    const next = { src, alt };
+    previewRef.current = next;
+    setPreview(next);
+  }, []);
+
+  const toggleQueryExpanded = useCallback(() => {
+    setQueryExpanded((open) => !open);
+  }, []);
 
   async function sendMessage(text: string) {
     pinQueryRef.current = true;
@@ -690,23 +916,26 @@ export default function Overlay() {
       { role: "assistant", content: "" },
     ]);
     try {
-      if (capturingRef.current) await waitForInFlightCapture();
+      if (captureModeRef.current !== "none" && capturingRef.current) {
+        await waitForInFlightCapture();
+      }
       if (
-        captureStale.current ||
-        (captureModeRef.current === "current" && captureRef.current?.mode === "selected windows")
+        captureModeRef.current !== "none" &&
+        (captureStale.current ||
+          (captureModeRef.current === "current" && captureRef.current?.mode === "selected windows"))
       ) {
         await refreshCapture();
       }
-      const attached = captureRef.current;
+      const attached = captureModeRef.current === "none" ? null : captureRef.current;
       if (attached?.dataUrl) {
         setLog((current) => {
-          const next = current.map((entry) => ({ ...entry }));
-          const firstUser = next.findIndex((entry) => entry.role === "user");
+          const firstUser = current.findIndex((entry) => entry.role === "user");
           if (firstUser < 0) return current;
-          const followUp = next.some((entry, index) => entry.role === "user" && index !== firstUser);
-          if (followUp || next[firstUser].image) return current;
+          const followUp = current.some((entry, index) => entry.role === "user" && index !== firstUser);
+          if (followUp || current[firstUser].image) return current;
+          const next = current.slice();
           next[firstUser] = {
-            ...next[firstUser],
+            ...current[firstUser],
             image: attached.dataUrl,
             imageAlt: windowLabel || attached.mode || "Captured window",
           };
@@ -753,17 +982,7 @@ export default function Overlay() {
       return;
     }
     setLog([]);
-    dropTokens();
-    setQueryExpanded(false);
-    setShowJump(false);
-    followRef.current = false;
-    pinQueryRef.current = false;
-    setUsedSearch(false);
-    setUsedSearchApi("");
-    setSearchSources([]);
-    setUsedVision(false);
-    setAskStatus(null);
-    setError(null);
+    clearTurnMeta();
     focusInput();
   }
 
@@ -791,6 +1010,10 @@ export default function Overlay() {
 
   const refreshCapture = useCallback(
     async (forceCurrent = false) => {
+      if (captureModeRef.current === "none") {
+        finishCaptureWait();
+        return;
+      }
       window.clearTimeout(debounceRef.current);
       const gen = ++captureGen.current;
       beginCaptureWait();
@@ -802,7 +1025,7 @@ export default function Overlay() {
         const payload = useAll
           ? await captureDisplays(ids)
           : await recapture(pinId, forceCurrent);
-        if (gen !== captureGen.current) return;
+        if (gen !== captureGen.current || captureModeRef.current === "none") return;
         captureStale.current = false;
         captureRef.current = payload;
         setCapture(payload);
@@ -831,7 +1054,6 @@ export default function Overlay() {
     setCaptureMode("all");
     captureStale.current = true;
     void persistCaptureMode("all", next);
-    refreshWindowList();
     window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
       void refreshCapture();
@@ -843,7 +1065,6 @@ export default function Overlay() {
       <div
         className={[
           "overlay-card",
-          showSettings ? "settings-open" : "",
           expanded ? "expanded" : "compact",
           continuing ? "has-thread" : "",
         ].join(" ")}
@@ -859,52 +1080,33 @@ export default function Overlay() {
           </span>
           <div className="titlebar-actions">
             <button
-              className={!showSettings && captureMode === "current" ? "chip on" : "chip"}
-              type="button"
-              onClick={() => {
-                closeSettings();
-                setMode("current");
-              }}
-            >
-              {expanded ? "Current window" : "Current"}
-            </button>
-            <button
-              className={!showSettings && captureMode === "all" ? "chip on" : "chip"}
-              type="button"
-              onClick={() => {
-                closeSettings();
-                setMode("all");
-              }}
-            >
-              {expanded ? "All windows" : "Windows"}
-            </button>
-            <button
               className={showSettings ? "chip on" : "ghost"}
               type="button"
               onClick={openSettingsView}
             >
               Settings
             </button>
-            {confirmClear ? (
-              <>
-                <span className="clear-confirm">Clear chat and context?</span>
-                <button className="danger" type="button" onClick={() => void onClear()}>
+            {continuing &&
+              (confirmClear ? (
+                <>
+                  <span className="clear-confirm">Clear chat and context?</span>
+                  <button className="danger" type="button" onClick={() => void onClear()}>
+                    Clear
+                  </button>
+                  <button className="ghost" type="button" onClick={() => setConfirmClear(false)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="danger"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmClear(true)}
+                >
                   Clear
                 </button>
-                <button className="ghost" type="button" onClick={() => setConfirmClear(false)}>
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                className="danger"
-                type="button"
-                disabled={busy || (log.length === 0 && !capture)}
-                onClick={() => setConfirmClear(true)}
-              >
-                Clear
-              </button>
-            )}
+              ))}
           </div>
           <button
             className="ghost window-btn"
@@ -923,7 +1125,7 @@ export default function Overlay() {
         ) : (
           <>
         {expanded && (
-        <div className="overlay-body" ref={bodyRef}>
+        <div className="overlay-body">
         {captureMode === "current" && log.length === 0 && (
           <section className="current-panel">
             {capture ? (
@@ -953,146 +1155,41 @@ export default function Overlay() {
           </section>
         )}
 
-        {captureMode === "all" && (
-          <section className="window-panel">
-            <div className="window-panel-head">
-              <span>Windows</span>
-              <span>{selectedIds.length} selected</span>
-            </div>
-            <p className="hint">Click a window to add it. Use × to remove it from the capture.</p>
-            <DisplayPicker
-              displays={displays}
-              selectedIds={selectedIds}
-              onToggle={(id) => void onToggleScreen(id)}
-            />
-          </section>
-        )}
-
         {error && <div className="banner error">{error}</div>}
 
         {log.length > 0 && (
-          <div
-            className={["chat-scroller", fadeTop ? "fade-top" : "", fadeBottom ? "fade-bottom" : ""].join(" ")}
-          >
+          <div className="chat-scroller" ref={scrollerWrapRef}>
           <section className="chat-log" aria-live="polite" ref={chatLogRef} onScroll={onChatScroll}>
             <div className="thread-label">This chat</div>
             {log.map((entry, index) => {
               const lastAssistant = entry.role === "assistant" && index === log.length - 1;
-              const firstUser = index === firstUserIndex;
               const latestUser = index === latestUserIndex;
-              const clampQuery = latestUser && queryNeedsClamp && !queryExpanded;
               return (
-                <article
+                <ChatTurn
                   key={`${entry.role}-${index}`}
-                  className={entry.role === "user" ? "turn user" : "turn assistant"}
-                  ref={latestUser ? latestUserRef : lastAssistant ? latestAssistantRef : undefined}
-                >
-                  {entry.role === "assistant" && (
-                    <div className="turn-avatar" aria-hidden>
-                      AI
-                    </div>
-                  )}
-                  <div className="turn-body">
-                    {firstUser && entry.image && (
-                      <button
-                        className="log-shot"
-                        type="button"
-                        title="Open screenshot"
-                        onClick={() => openPreview(entry.image!, entry.imageAlt || "Captured window")}
-                      >
-                        <img src={entry.image} alt={entry.imageAlt || "Captured window"} />
-                      </button>
-                    )}
-                    {entry.content ? (
-                      entry.role === "assistant" ? (
-                        <div className="assistant-output">
-                          <div
-                            className="answer-body"
-                            onClick={(event) => {
-                              const link = (event.target as HTMLElement).closest("a");
-                              if (!link) return;
-                              event.preventDefault();
-                              const href = link.getAttribute("href");
-                              if (href) void openUrl(href);
-                            }}
-                            dangerouslySetInnerHTML={{
-                              __html: renderLiteMarkdown(entry.content),
-                            }}
-                          />
-                          <button
-                            className="copy-output"
-                            type="button"
-                            title={copiedIndex === index ? "Copied" : "Copy response"}
-                            aria-label={copiedIndex === index ? "Copied" : "Copy response"}
-                            onClick={() => void copyOutput(index, entry.content)}
-                          >
-                            {copiedIndex === index ? (
-                              <svg viewBox="0 0 24 24" aria-hidden>
-                                <path d="M20 6 9 17l-5-5" />
-                              </svg>
-                            ) : (
-                              <svg viewBox="0 0 24 24" aria-hidden>
-                                <rect x="9" y="9" width="13" height="13" rx="2" />
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                              </svg>
-                            )}
-                          </button>
-                        </div>
-                      ) : (
-                        <div
-                          className={clampQuery ? "answer-body clamped" : "answer-body"}
-                          style={clampQuery ? { maxHeight: queryCap } : undefined}
-                          dangerouslySetInnerHTML={{
-                            __html: renderLiteMarkdown(entry.content),
-                          }}
-                        />
-                      )
-                    ) : null}
-                    {latestUser && queryNeedsClamp && (
-                      <button
-                        className="show-more"
-                        type="button"
-                        onClick={() => setQueryExpanded((open) => !open)}
-                      >
-                        {queryExpanded ? "Show less" : "Show full question"}
-                      </button>
-                    )}
-                    {busy && lastAssistant && (
-                      <div className="ask-status" aria-live="polite">
-                        <span className="ask-status-orb" />
-                        <strong>{askStatus?.api || "clAIre"}</strong>
-                        <span>{askStatus?.detail || (entry.content ? "streaming" : "thinking")}</span>
-                        <div className="typing" aria-hidden="true">
-                          <span />
-                          <span />
-                          <span />
-                        </div>
-                      </div>
-                    )}
-                    {lastAssistant && (usedVision || usedSearch) && (
-                      <div className="turn-tags">
-                        {usedVision && <em>vision</em>}
-                        {usedSearch && <em>{usedSearchApi || "web"}</em>}
-                      </div>
-                    )}
-                    {lastAssistant && usedSearch && searchSources.length > 0 && (
-                      <ol className="search-cites">
-                        {searchSources.map((source) => (
-                          <li key={`${source.index}-${source.url}`}>
-                            <button
-                              type="button"
-                              className="cite-link"
-                              title={source.url}
-                              onClick={() => void openUrl(source.url)}
-                            >
-                              {source.title}
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </div>
-                </article>
+                  entry={entry}
+                  index={index}
+                  isLastAssistant={lastAssistant}
+                  isFirstUser={index === firstUserIndex}
+                  isLatestUser={latestUser}
+                  clampQuery={latestUser && queryNeedsClamp && !queryExpanded}
+                  queryCap={latestUser ? queryCap : 0}
+                  queryExpanded={latestUser ? queryExpanded : false}
+                  showClamp={latestUser && queryNeedsClamp}
+                  copied={copiedIndex === index}
+                  busy={lastAssistant && busy}
+                  askStatus={lastAssistant ? askStatus : null}
+                  usedVision={lastAssistant && usedVision}
+                  usedSearch={lastAssistant && usedSearch}
+                  usedSearchApi={lastAssistant ? usedSearchApi : ""}
+                  searchSources={lastAssistant ? searchSources : EMPTY_SOURCES}
+                  latestUserRef={latestUserRef}
+                  latestAssistantRef={latestAssistantRef}
+                  onOpenPreview={openPreview}
+                  onToggleQuery={toggleQueryExpanded}
+                  onCopyOutput={copyOutput}
+                  onAnswerClick={onAnswerClick}
+                />
               );
             })}
           </section>
@@ -1121,6 +1218,16 @@ export default function Overlay() {
             <span className="thread-status fresh">New chat</span>
           )}
         </div>
+        <div className="composer-stack">
+        {captureMode === "all" && (
+          <div className="window-picker-wrap">
+            <DisplayPicker
+              displays={displays}
+              selectedIds={selectedIds}
+              onToggle={(id) => void onToggleScreen(id)}
+            />
+          </div>
+        )}
         <div className="composer">
           <textarea
             ref={inputRef}
@@ -1145,6 +1252,45 @@ export default function Overlay() {
               }
             }}
           />
+          <div className="capture-toggle" role="group" aria-label="Capture mode">
+            <button
+              type="button"
+              className={captureMode === "none" ? "on" : ""}
+              title="No window"
+              aria-label="No window"
+              onClick={() => setMode("none")}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <path
+                  fillRule="evenodd"
+                  d="M4.5 7h15a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 15.5v-7A1.5 1.5 0 0 1 4.5 7zM7.2 15.4 16.4 8.2l1.4 1.4-9.2 7.2z"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={captureMode === "current" ? "on" : ""}
+              title="Current window"
+              aria-label="Current window"
+              onClick={() => setMode("current")}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <rect x="3" y="7" width="18" height="10" rx="1.5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={captureMode === "all" ? "on" : ""}
+              title="Multiple windows"
+              aria-label="Multiple windows"
+              onClick={() => setMode("all")}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden>
+                <rect x="2" y="9" width="15" height="9" rx="1.5" />
+                <rect x="7" y="4" width="15" height="9" rx="1.5" opacity="0.45" />
+              </svg>
+            </button>
+          </div>
           {searchAvailable && (
             <button
               className={searchOn ? "web-toggle on" : "web-toggle"}
@@ -1178,17 +1324,20 @@ export default function Overlay() {
           </button>
         </div>
         </div>
+        </div>
 
         <div className="meta">
           <span className="meta-context" title={windowLabel || undefined}>
             <span className="meta-window">
-              {capturing
-                ? windowLabel
-                  ? `Sending ${windowLabel}`
-                  : "Capturing…"
-                : windowLabel || (capture ? "Screen context" : "No window context yet")}
+              {captureMode === "none"
+                ? "No window"
+                : capturing
+                  ? windowLabel
+                    ? `Sending ${windowLabel}`
+                    : "Capturing…"
+                  : windowLabel || (capture ? "Screen context" : "No window context yet")}
             </span>
-            {!capturing && capture && (
+            {captureMode !== "none" && !capturing && capture && (
               <span className="meta-size">
                 {capture.width}×{capture.height}
               </span>

@@ -151,12 +151,6 @@ button {
   border-color: var(--accent);
 }
 
-.row {
-  display: flex;
-  gap: 0.6rem;
-  align-items: center;
-}
-
 .chip {
   background: transparent;
   border-color: var(--card-border);
@@ -191,7 +185,7 @@ button {
   gap: var(--gap);
   padding: 0 6px 0 12px;
   border: 1px solid var(--card-border);
-  border-radius: var(--radius);
+  border-radius: 999px;
   background: var(--input);
 }
 

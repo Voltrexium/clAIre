@@ -34,6 +34,7 @@ pub enum SearchProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CaptureMode {
+    None,
     #[serde(alias = "primary", alias = "active-window")]
     Current,
     All,
@@ -173,7 +174,7 @@ impl Default for Settings {
             custom_base_url: String::new(),
             custom_api_key: String::new(),
             custom_model: String::new(),
-            system_prompt: "You are clAIre, a fast desktop context assistant. The user may attach a screenshot of their screen or active window. Use that visual context. Be concise unless asked for depth. If web search results are provided, cite them briefly.".into(),
+            system_prompt: "You are clAIre, a fast desktop context assistant. The user may attach a screenshot of their screen or active window. Use that visual context. Be concise unless asked for depth, but always add one or two sentences of context on why, what, or how the answer was reached. If web search results are provided, cite them briefly.".into(),
             hotkey: "CommandOrControl+Shift+Space".into(),
             capture_mode: CaptureMode::Current,
             capture_display_ids: Vec::new(),
@@ -277,26 +278,17 @@ impl Settings {
         }
     }
 
+    fn search_key_str(&self) -> Option<&str> {
+        let key = match self.search_provider {
+            SearchProvider::Tavily => self.tavily_api_key.trim(),
+            SearchProvider::Brave => self.brave_api_key.trim(),
+            SearchProvider::Duckduckgo => DDG_LOCAL_KEY,
+        };
+        if key.is_empty() { None } else { Some(key) }
+    }
+
     pub fn search_key_id(&self) -> Option<String> {
-        match self.search_provider {
-            SearchProvider::Tavily => {
-                let key = self.tavily_api_key.trim();
-                if key.is_empty() {
-                    None
-                } else {
-                    Some(key.to_string())
-                }
-            }
-            SearchProvider::Brave => {
-                let key = self.brave_api_key.trim();
-                if key.is_empty() {
-                    None
-                } else {
-                    Some(key.to_string())
-                }
-            }
-            SearchProvider::Duckduckgo => Some(DDG_LOCAL_KEY.into()),
-        }
+        self.search_key_str().map(str::to_string)
     }
 
     fn search_map(&self) -> &HashMap<String, KeyUsage> {
@@ -350,51 +342,19 @@ impl Settings {
     }
 
     pub fn apply_form_limits_to_keys(&mut self) {
-        if let Some(key) = {
-            let key = self.tavily_api_key.trim();
-            if key.is_empty() {
-                None
-            } else {
-                Some(key.to_string())
-            }
-        } {
-            let limit = self.tavily_monthly_limit;
-            self.search_usage
-                .tavily
-                .entry(key)
-                .and_modify(|slot| slot.monthly_limit = limit)
-                .or_insert(KeyUsage {
-                    monthly_limit: limit,
-                    ..KeyUsage::default()
-                });
+        let tavily_key = self.tavily_api_key.trim().to_string();
+        if !tavily_key.is_empty() {
+            upsert_limit(&mut self.search_usage.tavily, tavily_key, self.tavily_monthly_limit);
         }
-        if let Some(key) = {
-            let key = self.brave_api_key.trim();
-            if key.is_empty() {
-                None
-            } else {
-                Some(key.to_string())
-            }
-        } {
-            let limit = self.brave_monthly_limit;
-            self.search_usage
-                .brave
-                .entry(key)
-                .and_modify(|slot| slot.monthly_limit = limit)
-                .or_insert(KeyUsage {
-                    monthly_limit: limit,
-                    ..KeyUsage::default()
-                });
+        let brave_key = self.brave_api_key.trim().to_string();
+        if !brave_key.is_empty() {
+            upsert_limit(&mut self.search_usage.brave, brave_key, self.brave_monthly_limit);
         }
-        let limit = self.duckduckgo_monthly_limit;
-        self.search_usage
-            .duckduckgo
-            .entry(DDG_LOCAL_KEY.into())
-            .and_modify(|slot| slot.monthly_limit = limit)
-            .or_insert(KeyUsage {
-                monthly_limit: limit,
-                ..KeyUsage::default()
-            });
+        upsert_limit(
+            &mut self.search_usage.duckduckgo,
+            DDG_LOCAL_KEY.to_string(),
+            self.duckduckgo_monthly_limit,
+        );
     }
 
     pub fn sync_form_limits_from_keys(&mut self) {
@@ -410,8 +370,8 @@ impl Settings {
     }
 
     pub fn search_monthly_limit(&self) -> u32 {
-        self.search_key_id()
-            .and_then(|key| self.search_map().get(&key).map(|slot| slot.monthly_limit))
+        self.search_key_str()
+            .and_then(|key| self.search_map().get(key).map(|slot| slot.monthly_limit))
             .unwrap_or_else(|| match self.search_provider {
                 SearchProvider::Tavily => self.tavily_monthly_limit,
                 SearchProvider::Brave => self.brave_monthly_limit,
@@ -421,8 +381,8 @@ impl Settings {
 
     pub fn search_count_this_month(&self) -> u32 {
         let month = current_month();
-        self.search_key_id()
-            .and_then(|key| self.search_map().get(&key).cloned())
+        self.search_key_str()
+            .and_then(|key| self.search_map().get(key))
             .map(|slot| if slot.month == month { slot.count } else { 0 })
             .unwrap_or(0)
     }
@@ -438,6 +398,15 @@ impl Settings {
         }
         slot.count = slot.count.saturating_add(1);
     }
+}
+
+fn upsert_limit(map: &mut HashMap<String, KeyUsage>, key: String, limit: u32) {
+    map.entry(key)
+        .and_modify(|slot| slot.monthly_limit = limit)
+        .or_insert(KeyUsage {
+            monthly_limit: limit,
+            ..KeyUsage::default()
+        });
 }
 
 pub fn current_month() -> String {

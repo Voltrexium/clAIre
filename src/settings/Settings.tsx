@@ -25,7 +25,7 @@ const DEFAULTS: Settings = {
   customApiKey: "",
   customModel: "",
   systemPrompt:
-    "You are clAIre, a fast desktop context assistant. The user may attach a screenshot of their screen or active window. Use that visual context. Be concise unless asked for depth. If web search results are provided, cite them briefly.",
+    "You are clAIre, a fast desktop context assistant. The user may attach a screenshot of their screen or active window. Use that visual context. Be concise unless asked for depth, but always add one or two sentences of context on why, what, or how the answer was reached. If web search results are provided, cite them briefly.",
   hotkey: "CommandOrControl+Shift+Space",
   captureMode: "current",
   captureDisplayIds: [],
@@ -55,6 +55,21 @@ function activeSearchKey(settings: Settings) {
   if (settings.searchProvider === "tavily") return settings.tavilyApiKey.trim();
   if (settings.searchProvider === "brave") return settings.braveApiKey.trim();
   return "local";
+}
+
+function withSearchKey(
+  current: Settings,
+  keyField: "tavilyApiKey" | "braveApiKey",
+  limitField: "tavilyMonthlyLimit" | "braveMonthlyLimit",
+  provider: "tavily" | "brave",
+  fallback: number,
+  value: string,
+): Settings {
+  return {
+    ...current,
+    [keyField]: value,
+    [limitField]: current.searchUsage[provider]?.[value.trim()]?.monthlyLimit ?? fallback,
+  };
 }
 
 function usageLine(settings: Settings) {
@@ -295,11 +310,9 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
                 type="password"
                 value={settings.tavilyApiKey}
                 onChange={(v) =>
-                  setSettings((current) => ({
-                    ...current,
-                    tavilyApiKey: v,
-                    tavilyMonthlyLimit: current.searchUsage.tavily?.[v.trim()]?.monthlyLimit ?? 1000,
-                  }))
+                  setSettings((current) =>
+                    withSearchKey(current, "tavilyApiKey", "tavilyMonthlyLimit", "tavily", 1000, v),
+                  )
                 }
               />
               <Text
@@ -317,11 +330,9 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
                 type="password"
                 value={settings.braveApiKey}
                 onChange={(v) =>
-                  setSettings((current) => ({
-                    ...current,
-                    braveApiKey: v,
-                    braveMonthlyLimit: current.searchUsage.brave?.[v.trim()]?.monthlyLimit ?? 2000,
-                  }))
+                  setSettings((current) =>
+                    withSearchKey(current, "braveApiKey", "braveMonthlyLimit", "brave", 2000, v),
+                  )
                 }
               />
               <Text

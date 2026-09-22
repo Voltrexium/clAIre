@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow};
@@ -64,11 +64,19 @@ fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("overlay")
 }
 
-fn lock_settings(state: &AppState) -> Result<Settings, String> {
+fn with_settings<T>(state: &AppState, read: impl FnOnce(&Settings) -> T) -> Result<T, String> {
     state
         .settings
         .lock()
-        .map(|guard| guard.clone())
+        .map(|guard| read(&guard))
+        .map_err(|err| err.to_string())
+}
+
+fn with_settings_mut<T>(state: &AppState, write: impl FnOnce(&mut Settings) -> T) -> Result<T, String> {
+    state
+        .settings
+        .lock()
+        .map(|mut guard| write(&mut guard))
         .map_err(|err| err.to_string())
 }
 
@@ -118,6 +126,53 @@ where
         .map_err(|err| err.to_string())?
 }
 
+fn spawn_recapture(
+    app: AppHandle,
+    gen: u64,
+    work: impl FnOnce(&AppHandle) -> Result<CapturePayload, String> + Send + 'static,
+) {
+    tauri::async_runtime::spawn(async move {
+        let shot_app = app.clone();
+        let result = run_blocking(move || work(&shot_app)).await;
+        if app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
+            return;
+        }
+        match result {
+            Ok(payload) => {
+                let _ = app.emit("claire://capture", payload);
+            }
+            Err(err) => {
+                let _ = app.emit("claire://error", err);
+            }
+        }
+    });
+}
+
+fn peek_cache() -> &'static Mutex<Option<(Instant, capture::CurrentTarget)>> {
+    static CACHE: OnceLock<Mutex<Option<(Instant, capture::CurrentTarget)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn peek_active_cached() -> capture::CurrentTarget {
+    const TTL: Duration = Duration::from_millis(400);
+    if let Ok(guard) = peek_cache().lock() {
+        if let Some((at, target)) = guard.as_ref() {
+            if at.elapsed() < TTL {
+                return target.clone();
+            }
+        }
+    }
+    let target = capture::peek_active();
+    remember_peek(&target);
+    target
+}
+
+fn remember_peek(target: &capture::CurrentTarget) {
+    if let Ok(mut guard) = peek_cache().lock() {
+        *guard = Some((Instant::now(), target.clone()));
+    }
+}
+
 fn hide_overlay_window(app: &AppHandle) {
     set_overlay_hidden(app, true);
     let hide_app = app.clone();
@@ -162,7 +217,9 @@ fn reset_session(app: &AppHandle) {
         session.summary.clear();
         session.total_messages = 0;
         session.epoch = session.epoch.saturating_add(1);
-        let _ = storage::save_session(app, &session);
+        if let Err(err) = storage::save_session(app, &session) {
+            eprintln!("clAIre session save: {err}");
+        }
     };
 }
 
@@ -223,7 +280,7 @@ pub fn start_active_watch(app: AppHandle) {
             if !current_mode {
                 continue;
             }
-            let peek = capture::peek_active();
+            let mut peek = peek_active_cached();
             if peek.id.is_none() {
                 continue;
             }
@@ -238,29 +295,25 @@ pub fn start_active_watch(app: AppHandle) {
             if same_id && same_label {
                 continue;
             }
+            peek = capture::peek_active();
+            remember_peek(&peek);
+            if peek.id.is_none() {
+                continue;
+            }
+            let same_id = pin.as_ref().is_some_and(|(id, _)| *id == peek.id);
+            let same_label = pin.as_ref().is_some_and(|(_, label)| label == &peek.label);
+            if same_id && same_label {
+                continue;
+            }
             pin_current(&app, &peek);
             emit_target(&app, &peek, !same_id);
             if same_id {
                 continue;
             }
             let gen = bump_watch_gen(&app);
-            let work_app = app.clone();
             let target = peek.clone();
-            tauri::async_runtime::spawn(async move {
-                let shot_app = work_app.clone();
-                let result =
-                    run_blocking(move || recapture_pinned(&shot_app, target, max_width)).await;
-                if work_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
-                    return;
-                }
-                match result {
-                    Ok(payload) => {
-                        let _ = work_app.emit("claire://capture", payload);
-                    }
-                    Err(err) => {
-                        let _ = work_app.emit("claire://error", err);
-                    }
-                }
+            spawn_recapture(app.clone(), gen, move |shot_app| {
+                recapture_pinned(shot_app, target, max_width)
             });
         })
     {
@@ -280,6 +333,15 @@ fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
 }
 
 fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+    let disabled = app
+        .state::<AppState>()
+        .settings
+        .lock()
+        .map(|settings| settings.capture_mode == CaptureMode::None)
+        .unwrap_or(false);
+    if disabled {
+        return Err("Capture is off".into());
+    }
     let capture = Arc::new(capture);
     let payload = capture.to_payload();
     *app.state::<AppState>()
@@ -288,7 +350,9 @@ fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<C
         .map_err(|err| err.to_string())? = Some(Arc::clone(&capture));
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _ = storage::persist_capture(&app, &capture);
+        if let Err(err) = storage::persist_capture(&app, &capture) {
+            eprintln!("clAIre capture save: {err}");
+        }
     });
     Ok(payload)
 }
@@ -324,7 +388,7 @@ fn recapture_memory(
     window_id: Option<u32>,
     force_current: bool,
 ) -> Result<CapturePayload, String> {
-    let max_width = lock_settings(&app.state::<AppState>())?.downscale_max_width;
+    let max_width = with_settings(&app.state::<AppState>(), |settings| settings.downscale_max_width)?;
     let target = if force_current {
         let target = capture::peek_active();
         if target.id.is_some() {
@@ -362,21 +426,8 @@ fn recapture_then_show(app: &AppHandle) {
         set_expanded(app, false);
         raise_overlay(app);
         let gen = bump_watch_gen(app);
-        let capture_app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            let work_app = capture_app.clone();
-            let result = run_blocking(move || recapture_pinned(&work_app, peeked, max_width)).await;
-            if capture_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
-                return;
-            }
-            match result {
-                Ok(payload) => {
-                    let _ = capture_app.emit("claire://capture", payload);
-                }
-                Err(err) => {
-                    let _ = capture_app.emit("claire://error", err);
-                }
-            }
+        spawn_recapture(app.clone(), gen, move |work_app| {
+            recapture_pinned(work_app, peeked, max_width)
         });
         return;
     }
@@ -391,28 +442,12 @@ fn recapture_then_show(app: &AppHandle) {
     set_expanded(app, false);
     raise_overlay(app);
     let gen = bump_watch_gen(app);
-    let capture_app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let work_app = capture_app.clone();
-        let result = run_blocking(move || {
-            let target = capture::current_target();
-            pin_current(&work_app, &target);
-            emit_target(&work_app, &target, true);
-            let _ = work_app.emit("claire://summoned", target.label.clone());
-            recapture_pinned(&work_app, target, max_width)
-        })
-        .await;
-        if capture_app.state::<AppState>().watch_gen.load(Ordering::SeqCst) != gen {
-            return;
-        }
-        match result {
-            Ok(payload) => {
-                let _ = capture_app.emit("claire://capture", payload);
-            }
-            Err(err) => {
-                let _ = capture_app.emit("claire://error", err);
-            }
-        }
+    spawn_recapture(app.clone(), gen, move |work_app| {
+        let target = capture::current_target();
+        pin_current(work_app, &target);
+        emit_target(work_app, &target, true);
+        let _ = work_app.emit("claire://summoned", target.label.clone());
+        recapture_pinned(work_app, target, max_width)
     });
 }
 
@@ -491,7 +526,9 @@ fn spawn_context_update(app: AppHandle, settings: Settings, query: String, reply
                         return;
                     }
                     session.summary = summary.trim().to_string();
-                    let _ = storage::save_session(&app, &session);
+                    if let Err(err) = storage::save_session(&app, &session) {
+                        eprintln!("clAIre session save: {err}");
+                    }
                 }
             }
             Err(err) => eprintln!("clAIre context thread: {err}"),
@@ -522,30 +559,33 @@ pub async fn capture_displays(
     state: State<'_, AppState>,
     ids: Vec<u32>,
 ) -> Result<CapturePayload, String> {
-    {
-        let mut settings = state.settings.lock().map_err(|err| err.to_string())?;
+    let max_width = with_settings_mut(&state, |settings| {
         settings.capture_mode = CaptureMode::All;
         settings.capture_display_ids = ids.clone();
-    }
-    let max_width = lock_settings(&state)?.downscale_max_width;
+        settings.downscale_max_width
+    })?;
     run_blocking(move || persist_captured(&app, capture::capture_ids(&ids, max_width)?)).await
 }
 
 #[tauri::command]
 pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
-    lock_settings(&state)
+    with_settings(&state, Clone::clone)
 }
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Settings, String> {
-    if let Ok(current) = lock_settings(&state) {
-        settings.search_usage = current.search_usage;
-    }
-    settings.apply_form_limits_to_keys();
-    storage::save_settings(&app, &settings)?;
-    hotkey::register(&app, &settings.hotkey)?;
-    *state.settings.lock().map_err(|err| err.to_string())? = settings.clone();
-    Ok(settings)
+    let saved = {
+        let mut live = state.settings.lock().map_err(|err| err.to_string())?;
+        settings.search_usage = live.search_usage.clone();
+        settings.capture_mode = live.capture_mode.clone();
+        settings.capture_display_ids = live.capture_display_ids.clone();
+        settings.apply_form_limits_to_keys();
+        storage::save_settings(&app, &settings)?;
+        *live = settings.clone();
+        settings
+    };
+    hotkey::register(&app, &saved.hotkey)?;
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -588,14 +628,24 @@ pub fn clear_context(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn set_capture_mode(
+    app: AppHandle,
     state: State<AppState>,
     mode: CaptureMode,
     display_ids: Option<Vec<u32>>,
 ) -> Result<(), String> {
-    let mut settings = state.settings.lock().map_err(|err| err.to_string())?;
-    settings.capture_mode = mode;
-    if let Some(ids) = display_ids {
-        settings.capture_display_ids = ids;
+    let clear = mode == CaptureMode::None;
+    {
+        let mut settings = state.settings.lock().map_err(|err| err.to_string())?;
+        settings.capture_mode = mode;
+        if let Some(ids) = display_ids {
+            settings.capture_display_ids = ids;
+        }
+    }
+    if clear {
+        let _ = bump_watch_gen(&app);
+        if let Ok(mut capture) = state.latest_capture.lock() {
+            *capture = None;
+        }
     }
     Ok(())
 }
@@ -665,7 +715,7 @@ pub async fn ask_claire(
 
     let (mut settings, history, thread_context, shot, epoch) = {
         let state = app.state::<AppState>();
-        let settings = lock_settings(&state)?;
+        let settings = with_settings(&state, Clone::clone)?;
         let session = state.session.lock().map_err(|err| err.to_string())?;
         let window = settings.history_limit;
         let history = if window == 0 {
@@ -713,8 +763,8 @@ pub async fn ask_claire(
                     let mut live = state.settings.lock().map_err(|err| err.to_string())?;
                     live.record_search_use();
                     settings.search_usage = live.search_usage.clone();
-                    storage::save_settings(&app, &live)?;
                 }
+                storage::schedule_settings_save(&app);
                 Some(block)
             }
             Err(err) => {
