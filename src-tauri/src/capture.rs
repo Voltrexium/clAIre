@@ -129,9 +129,10 @@ pub fn peek_active() -> CurrentTarget {
         }
     }
     let windows = Window::all().unwrap_or_default();
-    if let Some(window) = windows.iter().find(|window| {
-        window.is_focused().unwrap_or(false) && !is_ours(window)
-    }) {
+    if let Some(window) = windows
+        .iter()
+        .find(|window| window.is_focused().unwrap_or(false) && !is_ours(window))
+    {
         return CurrentTarget {
             id: window.id().ok().filter(|id| *id != 0),
             label: window_label(window),
@@ -194,11 +195,7 @@ pub fn target_for_id(id: u32) -> CurrentTarget {
 }
 
 pub fn capture_primary(max_width: u32) -> Result<Capture, String> {
-    finish(
-        capture_primary_monitor()?,
-        &[screen_shot(true)],
-        max_width,
-    )
+    finish(capture_primary_monitor()?, &[screen_shot(true)], max_width)
 }
 
 pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
@@ -230,7 +227,12 @@ pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
     }
     let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.3.clone()).collect();
     finish(
-        stitch_layout(tiles.into_iter().map(|(x, y, img, _)| (x, y, img)).collect()),
+        stitch_layout(
+            tiles
+                .into_iter()
+                .map(|(x, y, img, _)| (x, y, img))
+                .collect(),
+        ),
         &shots,
         max_width,
     )
@@ -277,7 +279,10 @@ fn capture_id(
         }
     }
 
-    if let Some(monitor) = monitors.iter().find(|monitor| monitor.id().ok() == Some(id)) {
+    if let Some(monitor) = monitors
+        .iter()
+        .find(|monitor| monitor.id().ok() == Some(id))
+    {
         let title = monitor
             .friendly_name()
             .or_else(|_| monitor.name())
@@ -343,14 +348,22 @@ fn downscale(img: RgbaImage, max_width: u32) -> RgbaImage {
     if max_width == 0 || img.width() <= max_width {
         return img;
     }
-    let height = ((img.height() as f32) * (max_width as f32 / img.width() as f32)).round().max(1.0) as u32;
+    let height = ((img.height() as f32) * (max_width as f32 / img.width() as f32))
+        .round()
+        .max(1.0) as u32;
     imageops::resize(&img, max_width, height, imageops::FilterType::Triangle)
 }
 
 fn pick_current(windows: &[Window]) -> Option<&Window> {
-    let usable: Vec<&Window> = windows.iter().filter(|window| is_usable(window, true)).collect();
+    let usable: Vec<&Window> = windows
+        .iter()
+        .filter(|window| is_usable(window, true))
+        .collect();
     let pool = if usable.is_empty() {
-        windows.iter().filter(|window| is_usable(window, false)).collect()
+        windows
+            .iter()
+            .filter(|window| is_usable(window, false))
+            .collect()
     } else {
         usable
     };
@@ -513,7 +526,11 @@ fn capture_primary_monitor() -> Result<RgbaImage, String> {
 
 fn stitch_layout(tiles: Vec<(i32, i32, RgbaImage)>) -> RgbaImage {
     const GAP: u32 = 8;
-    let width = tiles.iter().map(|(_, _, img)| img.width()).max().unwrap_or(1);
+    let width = tiles
+        .iter()
+        .map(|(_, _, img)| img.width())
+        .max()
+        .unwrap_or(1);
     let height = tiles
         .iter()
         .map(|(_, _, img)| img.height())
@@ -562,7 +579,8 @@ impl X11 {
         use xcb::Xid;
 
         let display = std::env::var("DISPLAY").ok();
-        let (conn, _) = xcb::Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
+        let (conn, _) =
+            xcb::Connection::connect(display.as_deref()).map_err(|err| err.to_string())?;
         let intern = |conn: &xcb::Connection, name: &str| -> Option<xcb::x::Atom> {
             let cookie = conn.send_request(&InternAtom {
                 only_if_exists: true,
@@ -602,7 +620,9 @@ fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
     let geometry = conn.send_request(&GetGeometry {
         drawable: Drawable::Window(window),
     });
-    let geometry = conn.wait_for_reply(geometry).map_err(|err| err.to_string())?;
+    let geometry = conn
+        .wait_for_reply(geometry)
+        .map_err(|err| err.to_string())?;
     let width = geometry.width() as u32;
     let height = geometry.height() as u32;
     if width < 1 || height < 1 {
@@ -639,7 +659,11 @@ fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
         return Err(format!("Unsupported image depth {depth}"));
     }
     let mut rgba = vec![255u8; count * 4];
-    for (src, dst) in bytes.chunks_exact(step).zip(rgba.chunks_exact_mut(4)).take(count) {
+    for (src, dst) in bytes
+        .chunks_exact(step)
+        .zip(rgba.chunks_exact_mut(4))
+        .take(count)
+    {
         dst[0] = src[r_off];
         dst[1] = src[g_off];
         dst[2] = src[b_off];
@@ -663,8 +687,8 @@ fn linux_list_windows() -> Vec<DisplayInfo> {
 #[cfg(target_os = "linux")]
 fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, String> {
     use xcb::x::{
-        ATOM_ATOM, ATOM_NONE, ATOM_STRING, ATOM_WM_CLASS, ATOM_WM_NAME, Drawable, GetGeometry,
-        GetProperty, TranslateCoordinates, Window as XWindow,
+        Drawable, GetGeometry, GetProperty, TranslateCoordinates, Window as XWindow, ATOM_ATOM,
+        ATOM_NONE, ATOM_STRING, ATOM_WM_CLASS, ATOM_WM_NAME,
     };
     use xcb::XidNew;
 
@@ -772,12 +796,7 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
             .ok()
             .map(|reply| String::from_utf8_lossy(reply.value()).into_owned())
             .unwrap_or_default();
-        let app = class
-            .split('\u{0}')
-            .nth(1)
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let app = class.split('\u{0}').nth(1).unwrap_or("").trim().to_string();
 
         let mut title = String::new();
         if let (Some(name_atom), Some(utf8_atom)) = (net_wm_name, utf8) {

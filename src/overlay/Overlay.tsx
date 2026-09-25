@@ -1025,7 +1025,8 @@ export default function Overlay() {
         const payload = useAll
           ? await captureDisplays(ids)
           : await recapture(pinId, forceCurrent);
-        if (gen !== captureGen.current || captureModeRef.current === "none") return;
+        const modeAfterCapture = captureModeRef.current as CaptureMode;
+        if (gen !== captureGen.current || modeAfterCapture === "none") return;
         captureStale.current = false;
         captureRef.current = payload;
         setCapture(payload);

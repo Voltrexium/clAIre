@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in clAIre does not work as expected.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Do not include API keys, `.env` contents, or screenshots of private windows.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what clAIre did instead.
+      placeholder: Pressed the hotkey, the overlay opened, and the request failed with...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Settings and select...
+        2. Press the global hotkey
+        3. Send a query
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Hotkey or tray
+        - Screen or window capture
+        - Overlay or settings UI
+        - Chat provider
+        - Web search
+        - Storage or context
+        - Build or packaging
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux (X11)
+        - Linux (Wayland)
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: clAIre version or commit
+      description: App version, or the git commit if you built from source.
+      placeholder: 0.1.0 or abc1234
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider and model
+      description: Only if the bug involves a chat or search request.
+      placeholder: OpenAI / gpt-5.4-mini, or Ollama / llava
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error text
+      description: Terminal output from `npm run tauri dev`, or the error shown in the app. Redact keys and personal content.
+      render: text

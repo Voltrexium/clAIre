@@ -98,12 +98,7 @@ pub fn encode_png(img: image::RgbaImage) -> Result<Capture, String> {
     let height = img.height();
     let mut out = Vec::with_capacity((width * height) as usize / 4);
     PngEncoder::new_with_quality(&mut out, CompressionType::Fast, FilterType::NoFilter)
-        .write_image(
-            img.as_raw(),
-            width,
-            height,
-            image::ExtendedColorType::Rgba8,
-        )
+        .write_image(img.as_raw(), width, height, image::ExtendedColorType::Rgba8)
         .map_err(|err| err.to_string())?;
     Ok(Capture {
         png: out,

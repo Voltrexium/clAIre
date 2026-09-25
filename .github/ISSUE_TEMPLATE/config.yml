@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Privacy questions
+    url: https://github.com/Voltrexium/clAIre/blob/main/PRIVACY.md
+    about: How clAIre handles local data, screenshots, and API keys.
+  - name: Contributing
+    url: https://github.com/Voltrexium/clAIre/blob/main/CONTRIBUTING.md
+    about: Build setup, checks, and pull request expectations.

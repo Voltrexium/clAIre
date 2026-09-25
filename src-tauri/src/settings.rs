@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -78,7 +79,10 @@ impl<'de> Deserialize<'de> for SearchUsage {
     }
 }
 
-fn provider_usage_map(value: Option<&serde_json::Value>, default_limit: u32) -> HashMap<String, KeyUsage> {
+fn provider_usage_map(
+    value: Option<&serde_json::Value>,
+    default_limit: u32,
+) -> HashMap<String, KeyUsage> {
     let Some(value) = value else {
         return HashMap::new();
     };
@@ -92,7 +96,9 @@ fn provider_usage_map(value: Option<&serde_json::Value>, default_limit: u32) -> 
     };
     object
         .iter()
-        .filter(|(key, _)| key.as_str() != "month" && key.as_str() != "count" && key.as_str() != "monthlyLimit")
+        .filter(|(key, _)| {
+            key.as_str() != "month" && key.as_str() != "count" && key.as_str() != "monthlyLimit"
+        })
         .map(|(key, item)| (key.clone(), key_usage_from_value(item, default_limit)))
         .collect()
 }
@@ -278,17 +284,21 @@ impl Settings {
         }
     }
 
-    fn search_key_str(&self) -> Option<&str> {
+    fn search_key_str(&self) -> Option<String> {
         let key = match self.search_provider {
-            SearchProvider::Tavily => self.tavily_api_key.trim(),
-            SearchProvider::Brave => self.brave_api_key.trim(),
-            SearchProvider::Duckduckgo => DDG_LOCAL_KEY,
+            SearchProvider::Tavily => usage_key_id(self.tavily_api_key.trim()),
+            SearchProvider::Brave => usage_key_id(self.brave_api_key.trim()),
+            SearchProvider::Duckduckgo => DDG_LOCAL_KEY.to_string(),
         };
-        if key.is_empty() { None } else { Some(key) }
+        if key.is_empty() {
+            None
+        } else {
+            Some(key)
+        }
     }
 
     pub fn search_key_id(&self) -> Option<String> {
-        self.search_key_str().map(str::to_string)
+        self.search_key_str()
     }
 
     fn search_map(&self) -> &HashMap<String, KeyUsage> {
@@ -308,9 +318,17 @@ impl Settings {
     }
 
     pub fn adopt_legacy_search_usage(&mut self) {
+        self.search_usage.tavily = rekey_usage(std::mem::take(&mut self.search_usage.tavily));
+        self.search_usage.brave = rekey_usage(std::mem::take(&mut self.search_usage.brave));
         for (provider, current) in [
-            (SearchProvider::Tavily, self.tavily_api_key.trim().to_string()),
-            (SearchProvider::Brave, self.brave_api_key.trim().to_string()),
+            (
+                SearchProvider::Tavily,
+                usage_key_id(self.tavily_api_key.trim()),
+            ),
+            (
+                SearchProvider::Brave,
+                usage_key_id(self.brave_api_key.trim()),
+            ),
             (SearchProvider::Duckduckgo, DDG_LOCAL_KEY.to_string()),
         ] {
             let map = match provider {
@@ -342,13 +360,21 @@ impl Settings {
     }
 
     pub fn apply_form_limits_to_keys(&mut self) {
-        let tavily_key = self.tavily_api_key.trim().to_string();
+        let tavily_key = usage_key_id(self.tavily_api_key.trim());
         if !tavily_key.is_empty() {
-            upsert_limit(&mut self.search_usage.tavily, tavily_key, self.tavily_monthly_limit);
+            upsert_limit(
+                &mut self.search_usage.tavily,
+                tavily_key,
+                self.tavily_monthly_limit,
+            );
         }
-        let brave_key = self.brave_api_key.trim().to_string();
+        let brave_key = usage_key_id(self.brave_api_key.trim());
         if !brave_key.is_empty() {
-            upsert_limit(&mut self.search_usage.brave, brave_key, self.brave_monthly_limit);
+            upsert_limit(
+                &mut self.search_usage.brave,
+                brave_key,
+                self.brave_monthly_limit,
+            );
         }
         upsert_limit(
             &mut self.search_usage.duckduckgo,
@@ -358,10 +384,18 @@ impl Settings {
     }
 
     pub fn sync_form_limits_from_keys(&mut self) {
-        if let Some(slot) = self.search_usage.tavily.get(self.tavily_api_key.trim()) {
+        if let Some(slot) = self
+            .search_usage
+            .tavily
+            .get(&usage_key_id(self.tavily_api_key.trim()))
+        {
             self.tavily_monthly_limit = slot.monthly_limit;
         }
-        if let Some(slot) = self.search_usage.brave.get(self.brave_api_key.trim()) {
+        if let Some(slot) = self
+            .search_usage
+            .brave
+            .get(&usage_key_id(self.brave_api_key.trim()))
+        {
             self.brave_monthly_limit = slot.monthly_limit;
         }
         if let Some(slot) = self.search_usage.duckduckgo.get(DDG_LOCAL_KEY) {
@@ -371,8 +405,9 @@ impl Settings {
 
     pub fn search_monthly_limit(&self) -> u32 {
         self.search_key_str()
+            .as_deref()
             .and_then(|key| self.search_map().get(key).map(|slot| slot.monthly_limit))
-            .unwrap_or_else(|| match self.search_provider {
+            .unwrap_or(match self.search_provider {
                 SearchProvider::Tavily => self.tavily_monthly_limit,
                 SearchProvider::Brave => self.brave_monthly_limit,
                 SearchProvider::Duckduckgo => self.duckduckgo_monthly_limit,
@@ -382,6 +417,7 @@ impl Settings {
     pub fn search_count_this_month(&self) -> u32 {
         let month = current_month();
         self.search_key_str()
+            .as_deref()
             .and_then(|key| self.search_map().get(key))
             .map(|slot| if slot.month == month { slot.count } else { 0 })
             .unwrap_or(0)
@@ -398,6 +434,44 @@ impl Settings {
         }
         slot.count = slot.count.saturating_add(1);
     }
+}
+
+/// Stable id for a search credential. Raw keys never belong in `settings.json` or the usage map.
+pub fn usage_key_id(key: &str) -> String {
+    let key = key.trim();
+    if key.is_empty() || key == DDG_LOCAL_KEY || key.starts_with("sha256:") {
+        return key.to_string();
+    }
+    let digest = Sha256::digest(key.as_bytes());
+    format!("sha256:{}", hex_encode(&digest))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn rekey_usage(map: HashMap<String, KeyUsage>) -> HashMap<String, KeyUsage> {
+    let mut out = HashMap::new();
+    for (key, usage) in map {
+        let id = usage_key_id(&key);
+        match out.entry(id) {
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(usage);
+            }
+            std::collections::hash_map::Entry::Occupied(mut slot) => {
+                if usage.count > slot.get().count {
+                    slot.insert(usage);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn upsert_limit(map: &mut HashMap<String, KeyUsage>, key: String, limit: u32) {
@@ -474,7 +548,8 @@ fn parse_dotenv(path: &PathBuf) -> Option<HashMap<String, String>> {
         }
         let (name, value) = line.split_once('=')?;
         let mut value = value.trim().to_string();
-        if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\''))
+        if (value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\''))
         {
             value = value[1..value.len() - 1].to_string();
         }
@@ -483,4 +558,21 @@ fn parse_dotenv(path: &PathBuf) -> Option<HashMap<String, String>> {
         }
     }
     Some(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usage_ids_are_sha256_and_do_not_echo_the_secret() {
+        let id = usage_key_id("abc");
+        assert_eq!(
+            id,
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(!id.contains("abc"));
+        assert_eq!(usage_key_id(&id), id);
+        assert_eq!(usage_key_id("local"), "local");
+    }
 }

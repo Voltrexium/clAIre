@@ -1,0 +1,87 @@
+name: Provider integration
+description: Request support for a chat or web-search provider.
+title: "[Provider]: "
+labels: ["provider"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Chat providers are `Provider` in `src-tauri/src/settings.rs` and are called from `src-tauri/src/llm.rs`. Search providers are `SearchProvider` and are called from `src-tauri/src/search.rs`. OpenAI-compatible chat APIs can often share the existing OpenAI client.
+  - type: input
+    id: name
+    attributes:
+      label: Provider name
+      placeholder: Example API
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Chat
+        - Web search
+        - Both
+    validations:
+      required: true
+  - type: dropdown
+    id: protocol
+    attributes:
+      label: API shape
+      options:
+        - OpenAI-compatible chat completions
+        - Anthropic Messages API
+        - Ollama
+        - Provider-specific HTTP API
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: docs
+    attributes:
+      label: API documentation URL
+      placeholder: https://example.com/docs/api
+    validations:
+      required: true
+  - type: input
+    id: base-url
+    attributes:
+      label: Base URL
+      placeholder: https://api.example.com/v1
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication
+      options:
+        - API key in a header
+        - API key in a query parameter
+        - None (local)
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: vision
+    attributes:
+      label: Can it accept a screenshot?
+      description: clAIre sends a PNG with the user query when capture is on.
+      options:
+        - Yes, image input
+        - Text only
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: models
+    attributes:
+      label: Models to expose
+      description: Default model, and any others worth listing in Settings.
+      placeholder: example-vision-small
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Streaming, rate limits, regional endpoints, or differences from the providers already supported (OpenAI, Anthropic, Gemini, Groq, OpenRouter, Mistral, DeepSeek, xAI, Together, Fireworks, Ollama, custom; search via Tavily, Brave, DuckDuckGo).

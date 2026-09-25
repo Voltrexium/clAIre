@@ -22,6 +22,8 @@ sudo apt install -y \
 
 Screen capture uses X11 most reliably (Cinnamon on X11 is supported). Wayland capture is best-effort through `xcap`.
 
+API keys are stored in the system credential store (Secret Service: GNOME Keyring or KWallet). Install and unlock one of those before saving a key. `gnome-keyring` is already part of a normal Cinnamon session.
+
 ### macOS
 
 Install Xcode Command Line Tools. Grant **Screen Recording** and **Accessibility** permissions to clAIre (or the Terminal app while developing) so global hotkeys and screenshots work.
@@ -70,7 +72,15 @@ Installers are written to `src-tauri/target/release/bundle/` (`.deb` / AppImage 
 5. Set the global hotkey (default `Ctrl/Cmd+Shift+Space`) and capture target (primary display, all displays, or active window).
 6. Save. Press the hotkey: clAIre captures first, then focuses the overlay.
 
-API keys are stored only in the OS app-data directory (`settings.json`, mode `0600` on Unix). They are never committed to the repo.
+API keys are stored in the operating system credential store, not in `settings.json`:
+
+| Platform | Store |
+| --- | --- |
+| Linux | Secret Service (GNOME Keyring or KWallet) |
+| macOS | Keychain |
+| Windows | Credential Manager |
+
+`settings.json` keeps the rest of the configuration and is mode `0600` on Unix. Search usage is keyed by a SHA-256 id, not the key itself. Keys are never committed to the repo. An existing `settings.json` that still contains keys is migrated into the credential store on the next launch, then rewritten without those keys.
 
 ## Interaction
 
@@ -96,7 +106,7 @@ Vision is used whenever a capture exists and the configured model accepts images
 | Windows | `%APPDATA%\com.claire.desktop\` |
 
 ```
-settings.json          LLM keys, hotkey, capture mode
+settings.json          Hotkey, models, capture mode (API key fields are empty)
 context/session.json   Recent conversation turns (capped)
 context/latest.png     Last screenshot
 ```
@@ -135,13 +145,23 @@ flowchart LR
 | `npm run tauri dev` | Dev overlay + Rust backend |
 | `npm run tauri build` | Platform installer |
 | `npm run build` | Frontend only |
+| `npm test` | Frontend unit tests |
+| `npm run lint` | ESLint |
 | `python3 scripts/gen_icons.py` | Regenerate tray/app icons |
+
+Pull requests and pushes to `main` run GitHub Actions: `npm test`, ESLint, `npm run build`, `cargo fmt`, Clippy, `cargo test`, and installer builds on Linux, macOS, and Windows. Pushing a `v*` tag (for example `v0.1.0`) builds `.deb`, `.AppImage`, `.dmg`, `.msi`, and `.exe` and attaches them to a draft GitHub Release. Publish that draft after checking the assets.
+
+macOS builds are ad-hoc signed unless these repository secrets are set: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, and `APPLE_SIGNING_IDENTITY`. Notarization also uses `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. Windows Authenticode uses `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` when those secrets exist.
 
 ## Notes
 
 - Use a **vision-capable** model if you want the screenshot to matter (`gpt-4o`, `claude-sonnet-4-5`, `llava`, …). Text-only models still receive the query and search results.
 - If the hotkey does not fire, it is likely claimed by the desktop environment. Record a different chord in Settings.
 - macOS will prompt for screen-recording permission on the first capture.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the build setup, checks, and pull requests. Community expectations are in the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License & Privacy
 

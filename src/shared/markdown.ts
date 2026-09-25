@@ -90,6 +90,8 @@ function inline(escaped: string): string {
     .replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, "<em>$1</em>")
     .replace(/(?<![A-Za-z0-9_])_(?!_)([^_]+)_(?![A-Za-z0-9_])/g, "<em>$1</em>");
 
+  // NUL delimiters mark placeholder slots and are not part of the answer text.
+  // eslint-disable-next-line no-control-regex
   return text.replace(/\u0000(\d+)\u0000/g, (_, i: string) => slots[Number(i)]);
 }
 

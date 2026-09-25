@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::secrets;
 use crate::settings::Settings;
 use crate::state::{AppState, Capture, ChatMessage, Session};
 
@@ -33,9 +34,9 @@ pub fn ensure_dirs(app: &AppHandle) -> Result<(), String> {
 pub fn load_settings(app: &AppHandle) -> Result<Settings, String> {
     let path = settings_path(app)?;
     if !path.exists() {
-        let settings = Settings::default();
+        let mut settings = Settings::default();
+        secrets::hydrate(&mut settings)?;
         save_settings(app, &settings)?;
-        let mut settings = settings;
         settings.apply_temp_gemini_from_env();
         settings.apply_temp_search_from_env();
         settings.adopt_legacy_search_usage();
@@ -45,10 +46,15 @@ pub fn load_settings(app: &AppHandle) -> Result<Settings, String> {
     let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
     let mut settings: Settings =
         serde_json::from_str(&raw).map_err(|err| format!("Invalid settings.json: {err}"))?;
-    settings.apply_temp_gemini_from_env();
-    settings.apply_temp_search_from_env();
+    let leaked = secrets::plaintext_present(&settings);
+    secrets::hydrate(&mut settings)?;
     settings.adopt_legacy_search_usage();
     settings.sync_form_limits_from_keys();
+    if leaked {
+        save_settings(app, &settings)?;
+    }
+    settings.apply_temp_gemini_from_env();
+    settings.apply_temp_search_from_env();
     Ok(settings)
 }
 
@@ -75,7 +81,9 @@ pub fn schedule_settings_save(app: &AppHandle) {
                 loop {
                     let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
                     let (mut guard, _) = cv
-                        .wait_timeout_while(guard, Duration::from_secs(3600), |deadline| deadline.is_none())
+                        .wait_timeout_while(guard, Duration::from_secs(3600), |deadline| {
+                            deadline.is_none()
+                        })
                         .unwrap_or_else(|err| err.into_inner());
                     let Some(deadline) = *guard else {
                         continue;
@@ -109,8 +117,9 @@ pub fn schedule_settings_save(app: &AppHandle) {
 
 pub fn save_settings(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     ensure_dirs(app)?;
+    secrets::store(settings)?;
     let path = settings_path(app)?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|err| err.to_string())?;
+    let raw = secrets::redacted_json(settings)?;
     fs::write(&path, raw).map_err(|err| err.to_string())?;
     #[cfg(unix)]
     {
@@ -163,7 +172,13 @@ pub fn clear_context(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub fn push_turn(app: &AppHandle, session: &mut Session, user: String, assistant: String, limit: usize) {
+pub fn push_turn(
+    app: &AppHandle,
+    session: &mut Session,
+    user: String,
+    assistant: String,
+    limit: usize,
+) {
     session.messages.push(ChatMessage {
         role: "user".into(),
         content: user,

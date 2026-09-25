@@ -42,7 +42,6 @@ fn emit_ask_status(app: &AppHandle, phase: &str, api: &str, detail: &str) {
     );
 }
 
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageInfo {
@@ -72,7 +71,10 @@ fn with_settings<T>(state: &AppState, read: impl FnOnce(&Settings) -> T) -> Resu
         .map_err(|err| err.to_string())
 }
 
-fn with_settings_mut<T>(state: &AppState, write: impl FnOnce(&mut Settings) -> T) -> Result<T, String> {
+fn with_settings_mut<T>(
+    state: &AppState,
+    write: impl FnOnce(&mut Settings) -> T,
+) -> Result<T, String> {
     state
         .settings
         .lock()
@@ -332,7 +334,10 @@ fn pinned_target(app: &AppHandle) -> capture::CurrentTarget {
     target
 }
 
-fn persist_captured(app: &AppHandle, capture: crate::state::Capture) -> Result<CapturePayload, String> {
+fn persist_captured(
+    app: &AppHandle,
+    capture: crate::state::Capture,
+) -> Result<CapturePayload, String> {
     let disabled = app
         .state::<AppState>()
         .settings
@@ -388,7 +393,9 @@ fn recapture_memory(
     window_id: Option<u32>,
     force_current: bool,
 ) -> Result<CapturePayload, String> {
-    let max_width = with_settings(&app.state::<AppState>(), |settings| settings.downscale_max_width)?;
+    let max_width = with_settings(&app.state::<AppState>(), |settings| {
+        settings.downscale_max_width
+    })?;
     let target = if force_current {
         let target = capture::peek_active();
         if target.id.is_some() {
@@ -505,7 +512,13 @@ pub fn wipe_context(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_context_update(app: AppHandle, settings: Settings, query: String, reply: String, epoch: u64) {
+fn spawn_context_update(
+    app: AppHandle,
+    settings: Settings,
+    query: String,
+    reply: String,
+    epoch: u64,
+) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let _gate = state.context_gate.lock().await;
@@ -573,13 +586,18 @@ pub fn get_settings(state: State<AppState>) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, state: State<AppState>, mut settings: Settings) -> Result<Settings, String> {
+pub fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    mut settings: Settings,
+) -> Result<Settings, String> {
     let saved = {
         let mut live = state.settings.lock().map_err(|err| err.to_string())?;
         settings.search_usage = live.search_usage.clone();
         settings.capture_mode = live.capture_mode.clone();
         settings.capture_display_ids = live.capture_display_ids.clone();
         settings.apply_form_limits_to_keys();
+        settings.adopt_legacy_search_usage();
         storage::save_settings(&app, &settings)?;
         *live = settings.clone();
         settings
@@ -666,7 +684,11 @@ pub fn storage_info(app: AppHandle, state: State<AppState>) -> Result<StorageInf
         app_data_dir: storage::app_data_dir(&app)?.display().to_string(),
         settings_path: storage::settings_path(&app)?.display().to_string(),
         context_dir: storage::context_dir(&app)?.display().to_string(),
-        history_count: state.session.lock().map(|session| session.messages.len()).unwrap_or(0),
+        history_count: state
+            .session
+            .lock()
+            .map(|session| session.messages.len())
+            .unwrap_or(0),
     })
 }
 
@@ -680,7 +702,9 @@ pub fn open_storage_folder(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
     let url = url.trim();
-    let parsed = url.parse::<reqwest::Url>().map_err(|_| "Invalid URL".to_string())?;
+    let parsed = url
+        .parse::<reqwest::Url>()
+        .map_err(|_| "Invalid URL".to_string())?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("Only http(s) links can be opened".into());
     }
@@ -741,7 +765,8 @@ pub async fn ask_claire(
         .map(|capture| capture.windows.as_slice())
         .unwrap_or(&[]);
 
-    let want_search = include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
+    let want_search =
+        include_search.unwrap_or(settings.web_search_enabled) && settings.web_search_enabled;
     let mut used_search = false;
     let mut search_provider = None;
     let mut search_sources = Vec::new();

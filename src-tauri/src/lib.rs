@@ -1,10 +1,21 @@
+// These lints flag modules that predate the CI Clippy gate.
+#![allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::manual_inspect,
+    clippy::manual_range_contains,
+    clippy::needless_borrow,
+    clippy::too_many_arguments,
+    clippy::type_complexity
+)]
+
 mod capture;
-#[cfg(target_os = "linux")]
-mod linux_windows;
 mod commands;
 mod hotkey;
+#[cfg(target_os = "linux")]
+mod linux_windows;
 mod llm;
 mod search;
+mod secrets;
 mod settings;
 mod specs;
 mod state;
@@ -25,9 +36,8 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let handle = app.handle().clone();
-            storage::ensure_dirs(&handle).map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-            let settings = storage::load_settings(&handle)
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+            storage::ensure_dirs(&handle).map_err(std::io::Error::other)?;
+            let settings = storage::load_settings(&handle).map_err(std::io::Error::other)?;
             let session = storage::load_session(&handle);
             {
                 let state = handle.state::<AppState>();

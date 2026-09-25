@@ -230,7 +230,11 @@ fn format_block(pack: &SearchPack) -> String {
     block
 }
 
-async fn tavily_search(client: &Client, settings: &Settings, query: &str) -> Result<SearchPack, String> {
+async fn tavily_search(
+    client: &Client,
+    settings: &Settings,
+    query: &str,
+) -> Result<SearchPack, String> {
     let response = client
         .post("https://api.tavily.com/search")
         .json(&serde_json::json!({
@@ -249,7 +253,10 @@ async fn tavily_search(client: &Client, settings: &Settings, query: &str) -> Res
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    let hits = items.iter().map(|item| hit_from_json(item, "content")).collect();
+    let hits = items
+        .iter()
+        .map(|item| hit_from_json(item, "content"))
+        .collect();
     let answer = payload
         .get("answer")
         .and_then(|value| value.as_str())
@@ -258,7 +265,11 @@ async fn tavily_search(client: &Client, settings: &Settings, query: &str) -> Res
     Ok(SearchPack { answer, hits })
 }
 
-async fn brave_search(client: &Client, settings: &Settings, query: &str) -> Result<Vec<Hit>, String> {
+async fn brave_search(
+    client: &Client,
+    settings: &Settings,
+    query: &str,
+) -> Result<Vec<Hit>, String> {
     let response = client
         .get("https://api.search.brave.com/res/v1/web/search")
         .header("Accept", "application/json")
@@ -273,14 +284,29 @@ async fn brave_search(client: &Client, settings: &Settings, query: &str) -> Resu
         .and_then(|value| value.as_array())
         .cloned()
         .unwrap_or_default();
-    Ok(items.iter().map(|item| hit_from_json(item, "description")).collect())
+    Ok(items
+        .iter()
+        .map(|item| hit_from_json(item, "description"))
+        .collect())
 }
 
 fn hit_from_json(item: &Value, snippet_key: &str) -> Hit {
     Hit {
-        title: item.get("title").and_then(|v| v.as_str()).unwrap_or("Untitled").to_string(),
-        url: item.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        snippet: item.get(snippet_key).and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        title: item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled")
+            .to_string(),
+        url: item
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        snippet: item
+            .get(snippet_key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
     }
 }
 
@@ -314,9 +340,18 @@ async fn duckduckgo_instant(client: &Client, query: &str) -> Result<Vec<Hit>, St
         .map_err(|err| err.to_string())?;
     let payload = json_or_error(response, "DuckDuckGo").await?;
     let mut hits = Vec::new();
-    let heading = payload.get("Heading").and_then(|v| v.as_str()).unwrap_or("");
-    let abstract_text = payload.get("AbstractText").and_then(|v| v.as_str()).unwrap_or("");
-    let abstract_url = payload.get("AbstractURL").and_then(|v| v.as_str()).unwrap_or("");
+    let heading = payload
+        .get("Heading")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let abstract_text = payload
+        .get("AbstractText")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let abstract_url = payload
+        .get("AbstractURL")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     if !abstract_text.is_empty() {
         hits.push(Hit {
             title: if heading.is_empty() {
@@ -411,7 +446,11 @@ fn parse_ddg_html(html: &str) -> Vec<Hit> {
             .unwrap_or_default();
         if !href.is_empty() {
             hits.push(Hit {
-                title: if title.is_empty() { href.clone() } else { title },
+                title: if title.is_empty() {
+                    href.clone()
+                } else {
+                    title
+                },
                 url: href,
                 snippet,
             });
@@ -463,8 +502,10 @@ fn percent_decode(input: &str) -> String {
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(value) = u8::from_str_radix(std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""), 16)
-            {
+            if let Ok(value) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[index + 1..index + 3]).unwrap_or(""),
+                16,
+            ) {
                 out.push(value);
                 index += 3;
                 continue;
@@ -516,9 +557,15 @@ mod tests {
     #[test]
     fn keeps_only_bracket_cites() {
         let sources = vec![src(1), src(2), src(4)];
-        let (answer, out) = compact_cites("Saturday [1] and also [4]. Year [2026] is ignored.", &sources);
+        let (answer, out) = compact_cites(
+            "Saturday [1] and also [4]. Year [2026] is ignored.",
+            &sources,
+        );
         assert_eq!(out.iter().map(|s| s.index).collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(out.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["s1", "s4"]);
+        assert_eq!(
+            out.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            vec!["s1", "s4"]
+        );
         assert_eq!(answer, "Saturday [1] and also [2]. Year [2026] is ignored.");
     }
 
@@ -538,7 +585,10 @@ mod tests {
             &sources,
         );
         assert_eq!(out.iter().map(|s| s.index).collect::<Vec<_>>(), vec![1, 2]);
-        assert_eq!(out.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(), vec!["s1", "s5"]);
+        assert_eq!(
+            out.iter().map(|s| s.title.as_str()).collect::<Vec<_>>(),
+            vec!["s1", "s5"]
+        );
         assert_eq!(
             answer,
             "Today's date is Saturday, September 19, 2026 [1, 2]. It is the 262nd day of the year [2]."

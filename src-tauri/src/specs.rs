@@ -191,7 +191,8 @@ fn wmic(alias: &str, field: &str) -> Option<String> {
 
 fn unquote(value: &str) -> String {
     let value = value.trim();
-    if (value.starts_with('"') && value.ends_with('"')) || (value.starts_with('\'') && value.ends_with('\''))
+    if (value.starts_with('"') && value.ends_with('"'))
+        || (value.starts_with('\'') && value.ends_with('\''))
     {
         value[1..value.len() - 1].to_string()
     } else {

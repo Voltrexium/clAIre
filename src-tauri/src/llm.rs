@@ -163,9 +163,11 @@ fn content_text(content: &serde_json::Value, trim: bool) -> Option<String> {
         serde_json::Value::Array(parts) => parts
             .iter()
             .filter_map(|part| {
-                part.as_str()
-                    .map(str::to_string)
-                    .or_else(|| part.get("text").and_then(|v| v.as_str()).map(str::to_string))
+                part.as_str().map(str::to_string).or_else(|| {
+                    part.get("text")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
             })
             .collect(),
         _ => return None,
@@ -411,7 +413,11 @@ async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<S
         req = req.bearer_auth(key);
     }
     let response = req.send().await.map_err(|err| err.to_string())?;
-    let body = ensure_ok(response, "LLM").await?.text().await.map_err(|err| err.to_string())?;
+    let body = ensure_ok(response, "LLM")
+        .await?
+        .text()
+        .await
+        .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     value
         .pointer("/choices/0/message/content")
@@ -497,7 +503,9 @@ async fn plain_ollama(settings: &Settings, system: &str, user: &str) -> Result<S
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 async fn collect_sse<F>(
@@ -553,7 +561,8 @@ async fn collect_ndjson(app: &AppHandle, response: reqwest::Response) -> Result<
             let line = line.trim();
             if !line.is_empty() {
                 if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-                    if let Some(token) = value.pointer("/message/content").and_then(|v| v.as_str()) {
+                    if let Some(token) = value.pointer("/message/content").and_then(|v| v.as_str())
+                    {
                         if !token.is_empty() {
                             answer.push_str(token);
                             let _ = app.emit("claire://token", token.to_string());

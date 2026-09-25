@@ -17,7 +17,7 @@ src-tauri/gen/schemas/
 .vscode/
 *.swp
 
-# Env / secrets — credentials live in the app data directory, never here
+# Env / secrets — credentials live in the OS credential store, never here
 .env
 .env.*
 !.env.example

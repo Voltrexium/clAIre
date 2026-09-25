@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a change to clAIre.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A new chat or search provider has its own form. Use **Provider integration** for that.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should clAIre do, and where would someone see it (overlay, settings, tray, capture)?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other approaches you considered, if any.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Hotkey or tray
+        - Screen or window capture
+        - Overlay or settings UI
+        - Chat or context
+        - Web search
+        - Storage
+        - Other
+    validations:
+      required: true

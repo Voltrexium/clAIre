@@ -124,7 +124,8 @@ fn merge(out: &mut Vec<DisplayInfo>, extra: Vec<DisplayInfo>) {
     for item in extra {
         if out.iter().any(|existing| same_window(existing, &item)) {
             if item.current {
-                if let Some(existing) = out.iter_mut().find(|existing| same_window(existing, &item)) {
+                if let Some(existing) = out.iter_mut().find(|existing| same_window(existing, &item))
+                {
                     existing.current = true;
                     existing.primary = true;
                 }
@@ -178,7 +179,8 @@ fn remember_id(name: &str, x: i32, y: i32, width: u32, height: u32) -> u32 {
 }
 
 fn skip(app: &str, title: &str, width: u32, height: u32) -> bool {
-    crate::capture::linux_is_ours(app, title) || crate::capture::linux_is_shell(app, title, width, height)
+    crate::capture::linux_is_ours(app, title)
+        || crate::capture::linux_is_shell(app, title, width, height)
 }
 
 fn push_window(
@@ -249,10 +251,15 @@ fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
         .build()
         .map_err(|err| err.to_string())?;
 
-    let apps: Vec<(String, OwnedObjectPath)> = children(&atspi, "org.a11y.atspi.Registry", "/org/a11y/atspi/accessible/root")?;
+    let apps: Vec<(String, OwnedObjectPath)> = children(
+        &atspi,
+        "org.a11y.atspi.Registry",
+        "/org/a11y/atspi/accessible/root",
+    )?;
     let mut out = Vec::new();
     for (bus, _) in apps {
-        let app = property(&atspi, &bus, "/org/a11y/atspi/accessible/root", "Name").unwrap_or_default();
+        let app =
+            property(&atspi, &bus, "/org/a11y/atspi/accessible/root", "Name").unwrap_or_default();
         let frames = children(&atspi, &bus, "/org/a11y/atspi/accessible/root").unwrap_or_default();
         for (_, path) in frames {
             let role = role_name(&atspi, &bus, path.as_str());
@@ -263,7 +270,8 @@ fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
                 continue;
             }
             let title = property(&atspi, &bus, path.as_str(), "Name").unwrap_or_default();
-            let (x, y, width, height) = extents(&atspi, &bus, path.as_str()).unwrap_or((0, 0, 0, 0));
+            let (x, y, width, height) =
+                extents(&atspi, &bus, path.as_str()).unwrap_or((0, 0, 0, 0));
             if width > 0 && height > 0 && (width < 32 || height < 32) {
                 continue;
             }
@@ -299,7 +307,12 @@ fn children(
     reply.body().deserialize().map_err(|err| err.to_string())
 }
 
-fn property(conn: &zbus::blocking::Connection, dest: &str, path: &str, name: &str) -> Option<String> {
+fn property(
+    conn: &zbus::blocking::Connection,
+    dest: &str,
+    path: &str,
+    name: &str,
+) -> Option<String> {
     let reply = conn
         .call_method(
             Some(dest),
@@ -423,10 +436,22 @@ fn hypr_row(row: &serde_json::Value, current: bool) -> Option<DisplayInfo> {
         .unwrap_or_default();
     let at = row.get("at").and_then(|v| v.as_array());
     let size = row.get("size").and_then(|v| v.as_array());
-    let x = at.and_then(|v| v.first()).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let y = at.and_then(|v| v.get(1)).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let x = at
+        .and_then(|v| v.first())
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let y = at
+        .and_then(|v| v.get(1))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let width = size
+        .and_then(|v| v.first())
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let height = size
+        .and_then(|v| v.get(1))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
     from_json_window(app, title, x, y, width, height, current)
 }
 
@@ -462,9 +487,18 @@ fn walk_sway(node: &serde_json::Value, out: &mut Vec<DisplayInfo>) {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let rect = node.get("rect");
-    let x = rect.and_then(|v| v.get("x")).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let y = rect.and_then(|v| v.get("y")).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-    let width = rect.and_then(|v| v.get("width")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let x = rect
+        .and_then(|v| v.get("x"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let y = rect
+        .and_then(|v| v.get("y"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0) as i32;
+    let width = rect
+        .and_then(|v| v.get("width"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
     let height = rect
         .and_then(|v| v.get("height"))
         .and_then(|v| v.as_u64())
@@ -488,7 +522,9 @@ fn walk_sway(node: &serde_json::Value, out: &mut Vec<DisplayInfo>) {
             y,
             width,
             height,
-            node.get("focused").and_then(|v| v.as_bool()).unwrap_or(false),
+            node.get("focused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         );
     }
     if let Some(kids) = node.get("nodes").and_then(|v| v.as_array()) {
@@ -519,7 +555,9 @@ fn niri_windows() -> Vec<DisplayInfo> {
     for row in rows {
         if let Some(item) = niri_row(
             &row,
-            row.get("is_focused").and_then(|v| v.as_bool()).unwrap_or(false),
+            row.get("is_focused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
         ) {
             out.push(item);
         }
@@ -528,16 +566,36 @@ fn niri_windows() -> Vec<DisplayInfo> {
 }
 
 fn niri_row(row: &serde_json::Value, current: bool) -> Option<DisplayInfo> {
-    let app = row.get("app_id").and_then(|v| v.as_str()).unwrap_or_default();
-    let title = row.get("title").and_then(|v| v.as_str()).unwrap_or_default();
+    let app = row
+        .get("app_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let title = row
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let layout = row.get("layout");
-    let size = layout.and_then(|v| v.get("window_size")).and_then(|v| v.as_array());
+    let size = layout
+        .and_then(|v| v.get("window_size"))
+        .and_then(|v| v.as_array());
     let pos = layout
         .and_then(|v| v.get("tile_pos_in_workspace_view"))
         .and_then(|v| v.as_array());
-    let x = pos.and_then(|v| v.first()).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-    let y = pos.and_then(|v| v.get(1)).and_then(|v| v.as_f64()).unwrap_or(0.0) as i32;
-    let width = size.and_then(|v| v.first()).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let height = size.and_then(|v| v.get(1)).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let x = pos
+        .and_then(|v| v.first())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as i32;
+    let y = pos
+        .and_then(|v| v.get(1))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as i32;
+    let width = size
+        .and_then(|v| v.first())
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let height = size
+        .and_then(|v| v.get(1))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
     from_json_window(app, title, x, y, width, height, current)
 }

@@ -9,6 +9,7 @@ import {
   withCurrent,
 } from "../shared/models";
 import type { Provider, SearchProvider, Settings, StorageInfo } from "../shared/types";
+import { usageKeyId } from "../shared/usageKey";
 
 const EMPTY_USAGE = { tavily: {}, brave: {}, duckduckgo: {} };
 
@@ -52,8 +53,8 @@ function currentMonth() {
 }
 
 function activeSearchKey(settings: Settings) {
-  if (settings.searchProvider === "tavily") return settings.tavilyApiKey.trim();
-  if (settings.searchProvider === "brave") return settings.braveApiKey.trim();
+  if (settings.searchProvider === "tavily") return usageKeyId(settings.tavilyApiKey);
+  if (settings.searchProvider === "brave") return usageKeyId(settings.braveApiKey);
   return "local";
 }
 
@@ -68,7 +69,7 @@ function withSearchKey(
   return {
     ...current,
     [keyField]: value,
-    [limitField]: current.searchUsage[provider]?.[value.trim()]?.monthlyLimit ?? fallback,
+    [limitField]: current.searchUsage[provider]?.[usageKeyId(value)]?.monthlyLimit ?? fallback,
   };
 }
 

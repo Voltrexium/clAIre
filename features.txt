@@ -246,7 +246,7 @@ History limit / max shot width       UNTESTED     UNTESTED     UNTESTED     UNTE
 Search provider + monthly limits     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Storage paths shown                  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Open storage folder                  UNTESTED     UNTESTED     UNTESTED     UNTESTED
-API keys file mode 0600 (Unix)       UNTESTED     UNTESTED     UNTESTED     N/A
+API keys in OS credential store     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
 Storage locations
   Linux    ~/.local/share/com.claire.desktop/
@@ -258,6 +258,8 @@ Open folder uses: xdg-open / open / explorer
 How to test
   Save, quit, relaunch, settings still there.
   Open storage folder shows settings.json + context/.
+  After saving a provider key, settings.json has an empty key field. The key is in Secret Service (Linux), Keychain (macOS), or Credential Manager (Windows).
+  On Unix, settings.json is mode 0600.
 
 ========================================================================
 CONTEXT / STORAGE

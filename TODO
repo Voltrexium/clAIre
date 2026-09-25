@@ -4,3 +4,13 @@ chat persistence
 explanations 1/2 setence is a bit weird
 
 for multi window make the visual appearance of windows to be different than text box
+
+Privacy Controls & Redaction:
+
+    Blur or mask sensitive on-screen regions (e.g., passwords, credit card inputs) before sending frames to vision APIs.
+
+    Local image preprocessing or preview before sending.
+
+Keyboard Navigation & Accessibility: Deep keyboard shortcuts for history navigation, model switching, and full screen reader accessibility.
+
+Streaming Responses: Support streaming LLM output in the overlay chat bar to minimize perceived latency.
