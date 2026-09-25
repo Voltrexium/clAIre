@@ -6,7 +6,7 @@
     <title>clAIre</title>
     <meta
       name="description"
-      content="clAIre is a lightweight desktop assistant. Press a global hotkey, capture the screen, and ask about what is in front of you."
+      content="clAIre is a desktop tool built for clarity. It clarifies what is on your screen through a model you already use. Nothing is stored."
     />
     <link rel="icon" href="favicon.png" />
     <link rel="stylesheet" href="styles.css" />
@@ -16,7 +16,10 @@
       <a class="brand" href="#top">cl<span>AI</span>re</a>
       <nav class="site-nav" aria-label="Page">
         <a href="#how">How it works</a>
+        <a href="#providers">Compatibility</a>
+        <a href="#privacy">Privacy</a>
         <a href="#setup">Setup</a>
+        <a href="#contact">Contact</a>
         <a href="#sponsor">Sponsor</a>
         <a class="ghost" href="https://github.com/Voltrexium/clAIre">GitHub</a>
       </nav>
@@ -25,12 +28,13 @@
     <main id="top" class="wrap">
       <section class="hero">
         <div>
-          <p class="eyebrow">Desktop assistant</p>
-          <h1>Ask about what is on your screen.</h1>
+          <p class="eyebrow">Built for clarity</p>
+          <h1>Clarify what is on your screen.</h1>
           <p class="lede">
-            Press a global hotkey. clAIre captures the screen, or the active window, without
-            stealing focus first, then overlays a small query bar. The screenshot is sent as vision
-            context to the model you configure.
+            clAIre is built to clarify. Press a global hotkey and ask, in your own words, what you
+            need made clear. It captures the screen, or the active window, without stealing focus
+            first, then sends that view to a compatible model you configure so the answer can speak
+            to what is actually in front of you. Nothing you ask is stored.
           </p>
           <div class="actions">
             <a class="primary" href="#setup">Get started</a>
@@ -108,39 +112,52 @@
             <span>It screenshots nothing, the current window, or several windows you pick.</span>
           </li>
           <li>
-            <strong>Ask</strong>
-            <span>A compact bar appears. Enter sends the question with the screenshot attached.</span>
+            <strong>Clarify</strong>
+            <span>A compact bar appears. Ask what you need clarified. Enter sends the question with the screenshot attached.</span>
           </li>
           <li>
             <strong>Answer</strong>
-            <span>The bar becomes a resizable chat. Optional web search runs before the model.</span>
+            <span>The bar becomes a resizable chat. Optional web search runs before the compatible model.</span>
           </li>
         </ol>
       </section>
 
       <section class="block" id="providers">
-        <h2>Models</h2>
+        <h2>Compatibility</h2>
+        <p class="note lead">
+          The models listed here are compatibility. clAIre does not include one of its own. It
+          connects to a model you already use, so it can clarify what is on screen.
+        </p>
         <div class="grid">
           <article class="provider">
             <h3>OpenAI</h3>
-            <p>API key, a vision model such as gpt-4o, and an optional custom base URL.</p>
+            <p>Compatible with an API key, a vision model such as gpt-4o, and an optional custom base URL.</p>
           </article>
           <article class="provider">
             <h3>Anthropic</h3>
-            <p>API key and a Claude model. The screenshot is included when the model accepts images.</p>
+            <p>Compatible with an API key and a Claude model. The screenshot is included when the model accepts images.</p>
           </article>
           <article class="provider">
             <h3>Ollama</h3>
-            <p>A local endpoint, usually http://127.0.0.1:11434, and a vision model such as llava.</p>
+            <p>Compatible with a local endpoint, usually http://127.0.0.1:11434, and a vision model such as llava.</p>
           </article>
           <article class="provider">
             <h3>Custom</h3>
-            <p>Any OpenAI-compatible /v1/chat/completions server you already run.</p>
+            <p>Compatible with any OpenAI-compatible /v1/chat/completions server you already run.</p>
           </article>
         </div>
         <p class="note">
-          Web search is optional: Tavily, Brave, or DuckDuckGo. Results are prepended to the prompt.
-          API keys stay in the OS app-data directory and are never committed.
+          Web search is optional: Tavily, Brave, or DuckDuckGo. Results are prepended to the prompt
+          before it reaches the compatible model.
+        </p>
+      </section>
+
+      <section class="block" id="privacy">
+        <h2>Privacy</h2>
+        <p class="note lead">
+          clAIre is built with privacy in mind. Nothing is stored. There is no account and no clAIre
+          server. A question is sent only to the compatible model you configure, so it can clarify
+          what you asked, and clAIre does not keep a copy.
         </p>
       </section>
 
@@ -204,9 +221,17 @@ npm run tauri dev</code></pre>
           <dd>%APPDATA%\com.claire.desktop\</dd>
         </dl>
         <p class="note">
-          <code>settings.json</code> holds the provider, hotkey, and capture mode.
-          <code>context/</code> holds the current thread and the last screenshot. Clear context
-          deletes that folder from the overlay or from Settings.
+          If you save settings, <code>settings.json</code> holds the provider, hotkey, and capture
+          mode on this computer only. <code>context/</code> holds the current thread and the last
+          screenshot until you clear them. clAIre does not upload those files.
+        </p>
+      </section>
+
+      <section class="block" id="contact">
+        <h2>Contact</h2>
+        <p class="note lead">
+          Questions, suggestions, and anything else:
+          <a href="mailto:voltrexium@gmail.com">voltrexium@gmail.com</a>
         </p>
       </section>
 
@@ -238,7 +263,8 @@ npm run tauri dev</code></pre>
       </section>
 
       <footer class="site-footer">
-        <span>clAIre · tray assistant for the screen in front of you</span>
+        <span>clAIre · built to clarify what is on your screen</span>
+        <a href="mailto:voltrexium@gmail.com">voltrexium@gmail.com</a>
         <a href="https://github.com/Voltrexium/clAIre">github.com/Voltrexium/clAIre</a>
       </footer>
     </main>
