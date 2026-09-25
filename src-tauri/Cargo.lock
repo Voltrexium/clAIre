@@ -609,6 +609,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "core-foundation 0.10.1",
  "futures-util",
  "image",
  "keyring",
@@ -621,6 +622,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tokio",
+ "windows 0.61.3",
  "xcap",
  "xcb",
  "zbus 5.19.0",

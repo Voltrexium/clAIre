@@ -272,10 +272,11 @@ pub fn start_active_watch(app: AppHandle) {
             if overlay_hidden(&app) {
                 continue;
             }
-            let (current_mode, max_width) = match app.state::<AppState>().settings.lock() {
+            let (current_mode, max_width, redact) = match app.state::<AppState>().settings.lock() {
                 Ok(settings) => (
                     settings.capture_mode == CaptureMode::Current,
                     settings.downscale_max_width,
+                    settings.redact_passwords,
                 ),
                 Err(_) => continue,
             };
@@ -315,7 +316,7 @@ pub fn start_active_watch(app: AppHandle) {
             let gen = bump_watch_gen(&app);
             let target = peek.clone();
             spawn_recapture(app.clone(), gen, move |shot_app| {
-                recapture_pinned(shot_app, target, max_width)
+                recapture_pinned(shot_app, target, max_width, redact)
             });
         })
     {
@@ -366,21 +367,25 @@ fn recapture_pinned(
     app: &AppHandle,
     target: capture::CurrentTarget,
     max_width: u32,
+    redact: bool,
 ) -> Result<CapturePayload, String> {
     let (mut capture, label) = match target.id {
-        Some(id) => match capture::capture_ids(&[id], max_width) {
+        Some(id) => match capture::capture_ids(&[id], max_width, redact) {
             Ok(capture) => (capture, target.label.clone()),
             Err(_) => {
                 let fresh = capture::current_target();
                 pin_current(app, &fresh);
                 let capture = match fresh.id {
-                    Some(id) => capture::capture_ids(&[id], max_width)?,
-                    None => capture::capture_primary(max_width)?,
+                    Some(id) => capture::capture_ids(&[id], max_width, redact)?,
+                    None => capture::capture_primary(max_width, redact)?,
                 };
                 (capture, fresh.label)
             }
         },
-        None => (capture::capture_primary(max_width)?, target.label.clone()),
+        None => (
+            capture::capture_primary(max_width, redact)?,
+            target.label.clone(),
+        ),
     };
     if !label.is_empty() {
         capture.mode = label;
@@ -393,8 +398,8 @@ fn recapture_memory(
     window_id: Option<u32>,
     force_current: bool,
 ) -> Result<CapturePayload, String> {
-    let max_width = with_settings(&app.state::<AppState>(), |settings| {
-        settings.downscale_max_width
+    let (max_width, redact) = with_settings(&app.state::<AppState>(), |settings| {
+        (settings.downscale_max_width, settings.redact_passwords)
     })?;
     let target = if force_current {
         let target = capture::peek_active();
@@ -415,16 +420,16 @@ fn recapture_memory(
             None => pinned_target(app),
         }
     };
-    recapture_pinned(app, target, max_width)
+    recapture_pinned(app, target, max_width, redact)
 }
 
 fn recapture_then_show(app: &AppHandle) {
-    let max_width = app
+    let (max_width, redact) = app
         .state::<AppState>()
         .settings
         .lock()
-        .map(|settings| settings.downscale_max_width)
-        .unwrap_or(1280);
+        .map(|settings| (settings.downscale_max_width, settings.redact_passwords))
+        .unwrap_or((1280, true));
     let peeked = capture::peek_active();
     if peeked.id.is_some() {
         pin_current(app, &peeked);
@@ -434,7 +439,7 @@ fn recapture_then_show(app: &AppHandle) {
         raise_overlay(app);
         let gen = bump_watch_gen(app);
         spawn_recapture(app.clone(), gen, move |work_app| {
-            recapture_pinned(work_app, peeked, max_width)
+            recapture_pinned(work_app, peeked, max_width, redact)
         });
         return;
     }
@@ -454,7 +459,7 @@ fn recapture_then_show(app: &AppHandle) {
         pin_current(work_app, &target);
         emit_target(work_app, &target, true);
         let _ = work_app.emit("claire://summoned", target.label.clone());
-        recapture_pinned(work_app, target, max_width)
+        recapture_pinned(work_app, target, max_width, redact)
     });
 }
 
@@ -572,12 +577,13 @@ pub async fn capture_displays(
     state: State<'_, AppState>,
     ids: Vec<u32>,
 ) -> Result<CapturePayload, String> {
-    let max_width = with_settings_mut(&state, |settings| {
+    let (max_width, redact) = with_settings_mut(&state, |settings| {
         settings.capture_mode = CaptureMode::All;
         settings.capture_display_ids = ids.clone();
-        settings.downscale_max_width
+        (settings.downscale_max_width, settings.redact_passwords)
     })?;
-    run_blocking(move || persist_captured(&app, capture::capture_ids(&ids, max_width)?)).await
+    run_blocking(move || persist_captured(&app, capture::capture_ids(&ids, max_width, redact)?))
+        .await
 }
 
 #[tauri::command]

@@ -53,6 +53,7 @@ export interface Settings {
   searchUsage: SearchUsage;
   historyLimit: number;
   downscaleMaxWidth: number;
+  redactPasswords: boolean;
 }
 
 export interface DisplayInfo {
