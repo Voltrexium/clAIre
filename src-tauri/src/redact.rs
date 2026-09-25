@@ -350,7 +350,7 @@ mod macos {
         if list.is_null() {
             return Vec::new();
         }
-        let list = list as CFTypeRef;
+        let list: CFTypeRef = list.cast();
         let mut out = Vec::new();
         let count = array_len(list);
         for index in 0..count {
@@ -359,7 +359,7 @@ mod macos {
             {
                 continue;
             }
-            let dict = item as CFDictionaryRef;
+            let dict: CFDictionaryRef = item.cast();
             let layer = dict_i32(dict, unsafe { kCGWindowLayer }).unwrap_or(0);
             if layer != 0 {
                 continue;
@@ -367,9 +367,9 @@ mod macos {
             let Some(pid) = dict_i32(dict, unsafe { kCGWindowOwnerPID }) else {
                 continue;
             };
-            let bounds = unsafe { CFDictionaryGetValue(dict, kCGWindowBounds as CFTypeRef) };
+            let bounds = unsafe { CFDictionaryGetValue(dict, kCGWindowBounds.cast()) };
             if bounds.is_null()
-                || unsafe { CFGetTypeID(bounds as CFTypeRef) } != unsafe { CFDictionaryGetTypeID() }
+                || unsafe { CFGetTypeID(bounds.cast()) } != unsafe { CFDictionaryGetTypeID() }
             {
                 continue;
             }
@@ -380,9 +380,7 @@ mod macos {
                     height: 0.0,
                 },
             };
-            if unsafe { CGRectMakeWithDictionaryRepresentation(bounds as CFDictionaryRef, &mut cg) }
-                == 0
-            {
+            if unsafe { CGRectMakeWithDictionaryRepresentation(bounds.cast(), &mut cg) } == 0 {
                 continue;
             }
             let rect = ScreenRect {
@@ -461,14 +459,14 @@ mod macos {
             AXValueGetValue(
                 position,
                 K_AX_VALUE_CG_POINT,
-                &mut point as *mut _ as *mut c_void,
+                std::ptr::from_mut(&mut point).cast::<c_void>(),
             )
         };
         let size_ok = unsafe {
             AXValueGetValue(
                 size,
                 K_AX_VALUE_CG_SIZE,
-                &mut cg_size as *mut _ as *mut c_void,
+                std::ptr::from_mut(&mut cg_size).cast::<c_void>(),
             )
         };
         unsafe {
@@ -492,7 +490,7 @@ mod macos {
             unsafe { CFRelease(value) };
             return None;
         }
-        let text = unsafe { CFString::wrap_under_get_rule(value as CFStringRef).to_string() };
+        let text = unsafe { CFString::wrap_under_get_rule(value.cast()).to_string() };
         unsafe { CFRelease(value) };
         Some(text)
     }
@@ -514,26 +512,25 @@ mod macos {
         if array.is_null() || unsafe { CFGetTypeID(array) } != unsafe { CFArrayGetTypeID() } {
             return 0;
         }
-        unsafe { CFArrayGetCount(array as CFArrayRef) }
+        unsafe { CFArrayGetCount(array.cast()) }
     }
 
     fn array_item(array: CFTypeRef, index: isize) -> CFTypeRef {
-        unsafe { CFArrayGetValueAtIndex(array as CFArrayRef, index) as CFTypeRef }
+        unsafe { CFArrayGetValueAtIndex(array.cast(), index).cast() }
     }
 
     fn dict_i32(dict: CFDictionaryRef, key: CFStringRef) -> Option<i32> {
-        let value = unsafe { CFDictionaryGetValue(dict, key as CFTypeRef) };
-        if value.is_null()
-            || unsafe { CFGetTypeID(value as CFTypeRef) } != unsafe { CFNumberGetTypeID() }
+        let value = unsafe { CFDictionaryGetValue(dict, key.cast()) };
+        if value.is_null() || unsafe { CFGetTypeID(value.cast()) } != unsafe { CFNumberGetTypeID() }
         {
             return None;
         }
         let mut number = 0i32;
         let ok = unsafe {
             CFNumberGetValue(
-                value as CFNumberRef,
+                value.cast(),
                 K_CF_NUMBER_SINT32,
-                &mut number as *mut _ as *mut c_void,
+                std::ptr::from_mut(&mut number).cast::<c_void>(),
             )
         };
         if ok == 0 {
@@ -633,33 +630,32 @@ mod windows {
 
     fn top_level_windows() -> Vec<Listed> {
         let found = Mutex::new(Vec::new());
-        unsafe {
-            let ptr = &found as *const Mutex<Vec<Listed>> as isize;
-            let _ = EnumWindows(Some(enum_windows), LPARAM(ptr));
+        let ptr = std::ptr::from_ref(&found) as isize;
+        if let Err(err) = unsafe { EnumWindows(Some(enum_windows), LPARAM(ptr)) } {
+            eprintln!("clAIre window list: {err}");
         }
         found.into_inner().unwrap_or_default()
     }
 
     unsafe extern "system" fn enum_windows(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let found = &*(lparam.0 as *const Mutex<Vec<Listed>>);
-        if IsWindowVisible(hwnd).as_bool() {
-            let mut rect = RECT::default();
-            if GetWindowRect(hwnd, &mut rect).is_ok() {
-                let width = (rect.right - rect.left).max(0) as u32;
-                let height = (rect.bottom - rect.top).max(0) as u32;
-                if width >= 32 && height >= 32 {
-                    if let Ok(mut guard) = found.lock() {
-                        guard.push(Listed {
-                            hwnd,
-                            rect: ScreenRect {
-                                x: rect.left,
-                                y: rect.top,
-                                width,
-                                height,
-                            },
-                        });
-                    }
-                }
+        let mut rect = RECT::default();
+        if IsWindowVisible(hwnd).as_bool() && GetWindowRect(hwnd, &mut rect).is_ok() {
+            let width = (rect.right - rect.left).max(0) as u32;
+            let height = (rect.bottom - rect.top).max(0) as u32;
+            if width >= 32 && height >= 32 {
+                let Ok(mut guard) = found.lock() else {
+                    return true.into();
+                };
+                guard.push(Listed {
+                    hwnd,
+                    rect: ScreenRect {
+                        x: rect.left,
+                        y: rect.top,
+                        width,
+                        height,
+                    },
+                });
             }
         }
         true.into()

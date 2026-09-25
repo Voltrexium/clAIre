@@ -75,6 +75,10 @@ jobs:
 
       - run: npm ci
 
+      - name: Configure AppImage bundling
+        if: runner.os == 'Linux'
+        run: echo "NO_STRIP=true" >> "$GITHUB_ENV"
+
       - name: Choose macOS signing identity
         if: runner.os == 'macOS'
         env:

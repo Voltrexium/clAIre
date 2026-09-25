@@ -51,6 +51,12 @@ opt-level = 3
 [profile.dev.package.png]
 opt-level = 3
 
+[lints.rust]
+warnings = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
