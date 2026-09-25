@@ -554,6 +554,46 @@ kbd {
   font-size: 0.82rem;
 }
 
+.paypal {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  padding: 0 18px 0 12px;
+  border-radius: 999px;
+  background: #ffc439;
+  color: #001c64;
+  font-size: 0.95rem;
+  font-weight: 650;
+  box-shadow: 0 3px 0 #d9a01a;
+  text-decoration: none;
+}
+
+.paypal:hover {
+  background: #ffd56a;
+  color: #001c64;
+}
+
+.paypal-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.paypal-mark svg {
+  width: 18px;
+  height: 18px;
+  fill: #003087;
+}
+
+.paypal-word span {
+  color: #009cde;
+}
+
 .site-footer {
   display: flex;
   justify-content: space-between;
