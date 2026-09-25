@@ -24,7 +24,7 @@ jobs:
             args: "--target aarch64-apple-darwin --bundles dmg"
           - platform: macos-latest
             args: "--target x86_64-apple-darwin --bundles dmg"
-          - platform: ubuntu-22.04
+          - platform: ubuntu-24.04
             args: "--bundles deb,appimage"
           - platform: windows-latest
             args: "--bundles msi,nsis"
@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.platform == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \

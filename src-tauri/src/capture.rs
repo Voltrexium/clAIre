@@ -145,6 +145,7 @@ pub fn peek_active() -> CurrentTarget {
     }
 }
 
+#[allow(dead_code)]
 fn target_from_info(item: DisplayInfo) -> CurrentTarget {
     CurrentTarget {
         id: Some(item.id).filter(|id| *id != 0),
@@ -253,12 +254,12 @@ fn capture_id(
     id: u32,
 ) -> Result<(WindowShot, RgbaImage, Placement), String> {
     let listed = listed.iter().find(|item| item.id == id).cloned();
-    let listed_shot = || shot_from_listed(&listed, id);
+    let _listed_shot = || shot_from_listed(&listed, id);
 
     #[cfg(target_os = "linux")]
     if let Some((x, y, width, height)) = crate::linux_windows::extra_rect(id) {
         if let Ok((image, place)) = capture_rect(x, y, width, height) {
-            return Ok((listed_shot(), image, place));
+            return Ok((_listed_shot(), image, place));
         }
     }
 
@@ -271,7 +272,7 @@ fn capture_id(
             .or_else(|| x11_frame(id))
             .unwrap_or((0, 0, image.width(), image.height()));
         let place = Placement::new(x, y, width, height, image.width(), image.height());
-        return Ok((listed_shot(), image, place));
+        return Ok((_listed_shot(), image, place));
     }
 
     if let Some(window) = windows.iter().find(|window| window.id().ok() == Some(id)) {
