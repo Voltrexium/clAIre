@@ -350,6 +350,7 @@ mod macos {
         if list.is_null() {
             return Vec::new();
         }
+        let list = list as CFTypeRef;
         let mut out = Vec::new();
         let count = array_len(list);
         for index in 0..count {
@@ -558,7 +559,8 @@ mod macos {
 mod windows {
     use std::sync::Mutex;
 
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM, RECT};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
     };

@@ -916,6 +916,7 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     Ok(out)
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) fn linux_is_ours(app: &str, title: &str) -> bool {
     is_our_overlay(app, title)
 }

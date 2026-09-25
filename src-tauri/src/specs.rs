@@ -189,6 +189,7 @@ fn wmic(alias: &str, field: &str) -> Option<String> {
     None
 }
 
+#[cfg(target_os = "linux")]
 fn unquote(value: &str) -> String {
     let value = value.trim();
     if (value.starts_with('"') && value.ends_with('"'))

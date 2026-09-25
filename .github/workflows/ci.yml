@@ -16,8 +16,8 @@ jobs:
   frontend:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -34,7 +34,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -67,7 +67,7 @@ jobs:
           workspaces: "./src-tauri -> target"
       - name: rustfmt
         if: runner.os == 'Linux'
-        run: cargo fmt --all -- --check --manifest-path src-tauri/Cargo.toml
+        run: cargo fmt --all --check --manifest-path src-tauri/Cargo.toml
       - name: clippy
         run: cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
       - name: cargo test
@@ -79,9 +79,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-latest, windows-latest]
+        include:
+          - os: ubuntu-22.04
+            bundles: deb,appimage
+          - os: macos-latest
+            bundles: dmg
+          - os: windows-latest
+            bundles: msi,nsis
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -99,6 +105,7 @@ jobs:
             librsvg2-dev \
             libfuse2 \
             patchelf \
+            xdg-utils \
             pkg-config \
             libclang-dev \
             libxcb1-dev \
@@ -108,7 +115,7 @@ jobs:
             libwayland-dev \
             libegl-dev \
             libgbm-dev
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -120,8 +127,9 @@ jobs:
       - name: Build installers
         env:
           APPLE_SIGNING_IDENTITY: "-"
-        run: npm run tauri build
-      - uses: actions/upload-artifact@v4
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: npm run tauri build -- --bundles "${{ matrix.bundles }}"
+      - uses: actions/upload-artifact@v6
         with:
           name: claire-${{ matrix.os }}
           if-no-files-found: error

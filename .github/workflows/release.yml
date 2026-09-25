@@ -21,28 +21,46 @@ jobs:
       matrix:
         include:
           - platform: macos-latest
-            args: "--target aarch64-apple-darwin"
+            args: "--target aarch64-apple-darwin --bundles dmg"
           - platform: macos-latest
-            args: "--target x86_64-apple-darwin"
+            args: "--target x86_64-apple-darwin --bundles dmg"
           - platform: ubuntu-22.04
-            args: ""
+            args: "--bundles deb,appimage"
           - platform: windows-latest
-            args: ""
+            args: "--bundles msi,nsis"
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux build dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev build-essential curl wget file libfuse2 patchelf \
-            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
-            libgtk-3-dev pkg-config libclang-dev libxcb1-dev libxrandr-dev \
-            libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libfuse2 \
+            patchelf \
+            xdg-utils \
+            pkg-config \
+            libclang-dev \
+            libxcb1-dev \
+            libxrandr-dev \
+            libdbus-1-dev \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libegl-dev \
+            libgbm-dev
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -79,10 +97,11 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: "clAIre ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}"
-          releaseBody: "Installers for Linux (.deb, .AppImage), macOS (.dmg), and Windows (.msi, .exe) are attached to this release."
+          tagName: v__VERSION__
+          releaseName: "v__VERSION__"
+          releaseBody: "See release notes"
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
