@@ -142,3 +142,8 @@ flowchart LR
 - Use a **vision-capable** model if you want the screenshot to matter (`gpt-4o`, `claude-sonnet-4-5`, `llava`, …). Text-only models still receive the query and search results.
 - If the hotkey does not fire, it is likely claimed by the desktop environment. Record a different chord in Settings.
 - macOS will prompt for screen-recording permission on the first capture.
+
+## License & Privacy
+
+This project is open-source under the [MIT License](LICENSE).
+Read our [Privacy Policy](PRIVACY.md) to learn how local data and screenshots are handled.
