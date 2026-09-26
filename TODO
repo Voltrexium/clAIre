@@ -14,3 +14,5 @@ Privacy Controls & Redaction:
 Keyboard Navigation & Accessibility: Deep keyboard shortcuts for history navigation, model switching, and full screen reader accessibility.
 
 Streaming Responses: Support streaming LLM output in the overlay chat bar to minimize perceived latency.
+
+in settings window move save and back button to bottom right of frame (unaffected by scroll)
