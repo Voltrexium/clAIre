@@ -238,19 +238,12 @@ fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
         )?;
         let mut out = Vec::new();
         for (bus, _) in apps {
-            let app = crate::linux_a11y::property(
-                atspi,
-                &bus,
-                "/org/a11y/atspi/accessible/root",
-                "Name",
-            )
-            .unwrap_or_default();
-            let frames = crate::linux_a11y::children(
-                atspi,
-                &bus,
-                "/org/a11y/atspi/accessible/root",
-            )
-            .unwrap_or_default();
+            let app =
+                crate::linux_a11y::property(atspi, &bus, "/org/a11y/atspi/accessible/root", "Name")
+                    .unwrap_or_default();
+            let frames =
+                crate::linux_a11y::children(atspi, &bus, "/org/a11y/atspi/accessible/root")
+                    .unwrap_or_default();
             for (_, path) in frames {
                 let role = crate::linux_a11y::role_name(atspi, &bus, path.as_str());
                 if !matches!(
@@ -259,8 +252,8 @@ fn atspi_windows_inner() -> Result<Vec<DisplayInfo>, String> {
                 ) {
                     continue;
                 }
-                let title =
-                    crate::linux_a11y::property(atspi, &bus, path.as_str(), "Name").unwrap_or_default();
+                let title = crate::linux_a11y::property(atspi, &bus, path.as_str(), "Name")
+                    .unwrap_or_default();
                 let (x, y, width, height) =
                     crate::linux_a11y::extents(atspi, &bus, path.as_str()).unwrap_or((0, 0, 0, 0));
                 if width > 0 && height > 0 && (width < 32 || height < 32) {
@@ -488,4 +481,3 @@ fn niri_row(row: &serde_json::Value, current: bool) -> Option<DisplayInfo> {
         .unwrap_or(0) as u32;
     from_json_window(app, title, x, y, width, height, current)
 }
-

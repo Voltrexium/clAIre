@@ -252,12 +252,7 @@ pub fn capture_ids(ids: &[u32], max_width: u32, redact: bool) -> Result<Capture,
     let blurred = redact_tiles(&mut tiles, redact);
     let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.shot.clone()).collect();
     let mut capture = finish(
-        stitch_layout(
-            tiles
-                .into_iter()
-                .map(|tile| (0, 0, tile.image))
-                .collect(),
-        ),
+        stitch_layout(tiles.into_iter().map(|tile| (0, 0, tile.image)).collect()),
         &shots,
         max_width,
     )?;
@@ -543,7 +538,11 @@ fn filter_visible(all: &[Window]) -> Vec<Window> {
     if loose.len() > strict.len() {
         return loose;
     }
-    if strict.is_empty() { loose } else { strict }
+    if strict.is_empty() {
+        loose
+    } else {
+        strict
+    }
 }
 
 fn is_usable(window: &Window, strict: bool) -> bool {

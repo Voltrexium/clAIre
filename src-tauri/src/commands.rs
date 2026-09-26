@@ -61,7 +61,10 @@ fn overlay(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window("overlay")
 }
 
-pub(crate) fn with_settings<T>(state: &AppState, read: impl FnOnce(&Settings) -> T) -> Result<T, String> {
+pub(crate) fn with_settings<T>(
+    state: &AppState,
+    read: impl FnOnce(&Settings) -> T,
+) -> Result<T, String> {
     state
         .settings
         .lock()
@@ -312,8 +315,10 @@ pub async fn capture_displays(
         settings.capture_display_ids = ids.clone();
         (settings.downscale_max_width, settings.redact_passwords)
     })?;
-    run_blocking(move || crate::capture_flow::persist_captured(&app, capture::capture_ids(&ids, max_width, redact)?))
-        .await
+    run_blocking(move || {
+        crate::capture_flow::persist_captured(&app, capture::capture_ids(&ids, max_width, redact)?)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -411,7 +416,8 @@ pub async fn recapture(
     force_current: Option<bool>,
 ) -> Result<CapturePayload, String> {
     let force_current = force_current.unwrap_or(false);
-    run_blocking(move || crate::capture_flow::recapture_memory(&app, window_id, force_current)).await
+    run_blocking(move || crate::capture_flow::recapture_memory(&app, window_id, force_current))
+        .await
 }
 
 #[tauri::command]

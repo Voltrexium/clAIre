@@ -4,9 +4,12 @@
 
 ## How to test
 
+- [ ] `npm test`
+- [ ] `npm run lint`
 - [ ] `npm run build`
 - [ ] `cargo fmt --all -- --check --manifest-path src-tauri/Cargo.toml`
 - [ ] `cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml`
+- [ ] `cargo test --manifest-path src-tauri/Cargo.toml`
 - [ ] Manual check (describe it):
 
 ## Notes

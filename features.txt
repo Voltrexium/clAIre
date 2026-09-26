@@ -1,5 +1,5 @@
 clAIre feature test matrix
-Updated: 2026-09-19
+Updated: 2026-09-26
 
 How to use
   Fill the OS columns when you run a check. Replace UNTESTED / leave notes.
@@ -25,8 +25,8 @@ APP LIFECYCLE
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 Starts in tray, no window            UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Quit from tray exits process         UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Close overlay hides, does not quit   UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Second instance focuses overlay      UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Close hides, clears chat, stays up  UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Second instance recaptures + shows   UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Production bundle (.deb/.AppImage,
   .dmg/.app, .msi/.exe)              UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
@@ -37,9 +37,11 @@ Notes
 
 How to test
   Launch `npm run tauri dev` (or a bundle). Confirm tray only.
-  Close overlay with Esc or –. Confirm process still running.
+  Close overlay with Esc, –, or the window close button. Process still running.
+  The chat is cleared; context/latest.png remains until Clear context.
   Tray → Quit. Process gone.
-  Start a second copy; overlay should appear instead of a second app.
+  Start a second copy. It recaptures the current window and shows the overlay
+  instead of starting a second app.
 
 ========================================================================
 TRAY
@@ -64,13 +66,13 @@ Feature                              Linux-X11    Linux-WL     macOS        Wind
 Default CommandOrControl+Shift+Space UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Change hotkey in Settings + persist  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Hotkey captures then shows overlay   UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Hotkey again hides overlay           UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Hotkey again hides and clears chat   UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Does not steal focus before capture  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 macOS Accessibility permission       N/A          N/A          UNTESTED     N/A
 
 How to test
   Press default hotkey while another app is focused. Overlay appears after capture.
-  Press again: overlay hides.
+  Press again: overlay hides and the chat is cleared. The screenshot file stays.
   Change chord in Settings, Save, restart, confirm new chord.
   If it never fires, another app owns the shortcut (README).
 
@@ -80,13 +82,13 @@ OVERLAY UI
 
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 Compact ask bar on summon            UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Always on top, skip taskbar          UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Transparent frameless window         UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Compact: always on top, no taskbar   UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Transparent frameless, not resizable UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Drag by titlebar                     UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Esc hides (clears session)           UNTESTED     UNTESTED     UNTESTED     UNTESTED
-– hide button                        UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Expand on Ask / Settings / Windows   UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Window size follows content          UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Esc hides (clears chat, keeps shot)  UNTESTED     UNTESTED     UNTESTED     UNTESTED
+– hide button (same as Esc)          UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Grows in place for chat / Settings   UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Window height follows content        UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Enter sends, Shift+Enter newline     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Composer focus on summon             UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Stay open after picking windows      UNTESTED     UNTESTED     UNTESTED     UNTESTED
@@ -95,12 +97,17 @@ Long question clamps + Show full     UNTESTED     UNTESTED     UNTESTED     UNTE
 Composer stays visible while answering UNTESTED   UNTESTED     UNTESTED     UNTESTED
 
 Known Linux issue (history)
-  Hide/minimize then re-show has failed on GTK/Cinnamon (frameless window not
-  raised). Re-test: hide with –, then hotkey / tray Ask.
+  Hide then re-show has failed on GTK/Cinnamon (frameless window not raised).
+  Re-test: hide with –, then hotkey / tray Ask.
+  Compact summon is always on top and skipped on the taskbar. Tray → Settings
+  raises the expanded view in the taskbar and turns always-on-top off.
+  Sending a question only grows the same frameless window; it does not by
+  itself change always-on-top or the taskbar.
 
 How to test
   Summon compact bar. Type, Shift+Enter, Enter.
-  Open Settings and Windows chips; window should grow, not clip.
+  Open Settings and Multiple windows; the window should grow, not clip.
+  The user cannot drag-resize it. Height follows the content.
   Drag the titlebar (not buttons). Esc while preview/settings/chat.
   After a long question, Show full question / Show less.
   Scroll the thread up; Latest jumps back to the current turn.
@@ -117,6 +124,8 @@ Follow focused window while overlay
   stays open                         UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Ignore desktop/shell chrome          UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Downscale to max width setting       UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Password fields covered before save  UNTESTED     UNTESTED     UNTESTED     UNTESTED
+No-window mode sends text only       UNTESTED     UNTESTED     UNTESTED     UNTESTED
 macOS Screen Recording permission    N/A          N/A          UNTESTED     N/A
 
 Notes
@@ -133,6 +142,10 @@ How to test
   Confirm clAIre / panel / wallpaper is not captured.
   Click thumbnail to recapture after switching apps.
   Keep overlay open, focus another app; thumbnail/label should follow.
+  Password boxes reported by the OS should be covered in the thumbnail and
+  in context/latest.png. Turn the Settings toggle off and confirm they stay
+  visible. Terminal text and hidden custom fields are not covered.
+  No-window mode: Ask sends the question with no screenshot.
 
 ========================================================================
 CAPTURE — WINDOWS PICKER
@@ -157,10 +170,10 @@ Linux listing sources (test each compositor you care about)
   niri msg windows       IMPLEMENTED, UNTESTED (only if niri)
 
 How to test
-  Open Windows chip. Confirm multiple real apps, not the desktop.
+  Open Multiple windows. Confirm multiple real apps, not the desktop.
   Add two windows, Ask, confirm both in the shot / vision context.
   Open and close an app while the panel is up; list should refresh ~1.5s
-  (only while overlay is visible). Click Windows chip for a manual refresh.
+  (only while the overlay is visible and that mode is selected).
 
 ========================================================================
 CHAT / LLM
@@ -201,7 +214,7 @@ Providers (network, not OS-specific — still record where you ran them)
 
 How to test
   Vision-capable model: ask what is on screen; answer must use the capture.
-  Text-only model: still answers; screenshot may be ignored.
+  Text-only model: still answers. The PNG is still attached; the model may ignore it.
   Send two follow-ups; New chat; confirm historyLimit in Settings is respected.
   After more turns than the history limit, a later follow-up should still
   remember earlier facts (running thread context).
@@ -220,7 +233,7 @@ DuckDuckGo works without an API key  UNTESTED     UNTESTED     UNTESTED     UNTE
 Monthly use counter persists         UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Per-API-key count and monthly cap    UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Ask status shows search then LLM API UNTESTED     UNTESTED     UNTESTED     UNTESTED
-Missing key / monthly limit error    UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Missing key / limit warns, LLM runs  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Citations only for sources used      UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Click citation opens URL             UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
@@ -230,6 +243,8 @@ How to test
   Toggle off for one query; no search call. Counter in Settings should rise and survive restart.
   Unused numbered sources should not appear under the answer.
   Click a citation; system browser opens that URL.
+  Missing key or a reached monthly cap shows an error and the question is
+  still sent to the LLM without search results.
 
 ========================================================================
 SETTINGS
@@ -246,7 +261,8 @@ History limit / max shot width       UNTESTED     UNTESTED     UNTESTED     UNTE
 Search provider + monthly limits     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Storage paths shown                  UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Open storage folder                  UNTESTED     UNTESTED     UNTESTED     UNTESTED
-API keys in OS credential store     UNTESTED     UNTESTED     UNTESTED     UNTESTED
+API keys in OS credential store      UNTESTED     UNTESTED     UNTESTED     UNTESTED
+Blur password fields toggle          UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
 Storage locations
   Linux    ~/.local/share/com.claire.desktop/
@@ -260,6 +276,8 @@ How to test
   Open storage folder shows settings.json + context/.
   After saving a provider key, settings.json has an empty key field. The key is in Secret Service (Linux), Keychain (macOS), or Credential Manager (Windows).
   On Unix, settings.json is mode 0600.
+  Capture mode is chosen on the overlay. Saving Settings keeps the live mode.
+  Blur password fields is on by default.
 
 ========================================================================
 CONTEXT / STORAGE
@@ -268,6 +286,7 @@ CONTEXT / STORAGE
 Feature                              Linux-X11    Linux-WL     macOS        Windows
 settings.json written                UNTESTED     UNTESTED     UNTESTED     UNTESTED
 context/latest.png after capture     UNTESTED     UNTESTED     UNTESTED     UNTESTED
+context/latest.json after capture    UNTESTED     UNTESTED     UNTESTED     UNTESTED
 context/session.json after chat      UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Clear (overlay) wipes chat+files     UNTESTED     UNTESTED     UNTESTED     UNTESTED
 Clear confirm Cancel does nothing    UNTESTED     UNTESTED     UNTESTED     UNTESTED
@@ -275,8 +294,10 @@ Tray Clear Context                   UNTESTED     UNTESTED     UNTESTED     UNTE
 New chat keeps capture, wipes thread UNTESTED     UNTESTED     UNTESTED     UNTESTED
 
 How to test
-  Ask once. Confirm files on disk.
+  Ask once. Confirm latest.png, latest.json, and session.json on disk.
+  session.json includes the turns plus a summary after the history limit.
   New chat: thread gone, screenshot still attached.
+  Hide / Esc: chat cleared, screenshot files remain.
   Clear with confirm. Session and context/ gone. Cancel leaves them.
 
 ========================================================================
@@ -292,7 +313,7 @@ Linux
 macOS
   Xcode CLT
   Screen Recording (first capture prompt)
-  Accessibility (global hotkey)
+  Accessibility (global hotkey and password-field lookup)
 
 Windows
   WebView2

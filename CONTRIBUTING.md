@@ -30,7 +30,7 @@ Other useful commands:
 
 | Command | Purpose |
 | --- | --- |
-| `npm run tauri dev` | Overlay, settings window, and Rust backend |
+| `npm run tauri dev` | Overlay (including the settings view) and Rust backend |
 | `npm run tauri build` | Production installer under `src-tauri/target/release/bundle/` |
 | `npm test` | Frontend unit tests (Vitest) |
 | `npm run lint` | ESLint |
@@ -48,11 +48,11 @@ npm test
 npm run lint
 npm run build
 cargo fmt --all -- --check --manifest-path src-tauri/Cargo.toml
-cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml -- -D warnings
+cargo clippy --all-targets --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-`npm run build` runs `tsc` with the strict settings in `tsconfig.json` (`strict`, `noUnusedLocals`, `noUnusedParameters`). Fix Clippy warnings. Rust tests live in a `#[cfg(test)]` module next to the code or under `src-tauri/tests/`.
+`npm run build` runs `tsc` with the strict settings in `tsconfig.json` (`strict`, `noUnusedLocals`, `noUnusedParameters`). CI runs Clippy as `cargo clippy --all-targets` (warnings stay warnings). Rust tests live in `#[cfg(test)]` modules next to the code.
 
 For anything a user can see or trigger, also run `npm run tauri dev` and try the path you changed: hotkey, overlay, settings, capture, or a provider call. Do not paste API keys, `.env` contents, or screenshots of private screens into the pull request or an issue.
 

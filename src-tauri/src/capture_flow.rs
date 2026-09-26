@@ -296,4 +296,3 @@ pub(crate) fn recapture_then_show(app: &AppHandle) {
         recapture_pinned(work_app, target, max_width, redact)
     });
 }
-
