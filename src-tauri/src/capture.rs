@@ -198,11 +198,14 @@ pub fn target_for_id(id: u32) -> CurrentTarget {
 
 pub fn capture_primary(max_width: u32, redact: bool) -> Result<Capture, String> {
     let (mut image, place) = capture_primary_monitor()?;
+    let mut blurred = false;
     if redact {
         let fields = redact::fields_in(&[place.region()]);
-        redact::cover(&mut image, place, &fields);
+        blurred = redact::cover(&mut image, place, &fields);
     }
-    finish(image, &[screen_shot(true)], max_width)
+    let mut capture = finish(image, &[screen_shot(true)], max_width)?;
+    capture.passwords_blurred = blurred;
+    Ok(capture)
 }
 
 pub fn capture_ids(ids: &[u32], max_width: u32, redact: bool) -> Result<Capture, String> {
@@ -232,19 +235,81 @@ pub fn capture_ids(ids: &[u32], max_width: u32, redact: bool) -> Result<Capture,
             errors.join("; ")
         ));
     }
+    let mut blurred = false;
     if redact {
         let regions: Vec<_> = tiles.iter().map(|tile| tile.2.region()).collect();
         let fields = redact::fields_in(&regions);
         for (image, _, place) in &mut tiles {
-            redact::cover(image, *place, &fields);
+            blurred |= redact::cover(image, *place, &fields);
         }
     }
     let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.1.clone()).collect();
-    finish(
+    let mut capture = finish(
         stitch_layout(tiles.into_iter().map(|(img, _, _)| (0, 0, img)).collect()),
         &shots,
         max_width,
-    )
+    )?;
+    capture.passwords_blurred = blurred;
+    Ok(capture)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowPreview {
+    pub id: u32,
+    pub name: String,
+    pub data_url: String,
+    pub width: u32,
+    pub height: u32,
+    pub passwords_blurred: bool,
+}
+
+/// Redacted per-window images for the picker. Does not replace the capture that gets sent.
+pub fn preview_windows(ids: &[u32], max_width: u32, redact: bool) -> Vec<WindowPreview> {
+    let mut unique = Vec::new();
+    for id in ids {
+        if !unique.contains(id) {
+            unique.push(*id);
+        }
+    }
+    if unique.is_empty() {
+        return Vec::new();
+    }
+    let windows = Window::all().unwrap_or_default();
+    let monitors = Monitor::all().unwrap_or_default();
+    let listed = list_windows_info().unwrap_or_default();
+    let mut tiles = Vec::new();
+    for id in unique {
+        if let Ok((shot, image, place)) = capture_id(&windows, &monitors, &listed, id) {
+            tiles.push((id, shot, image, place));
+        }
+    }
+    let mut blurred = vec![false; tiles.len()];
+    if redact {
+        let regions: Vec<_> = tiles.iter().map(|tile| tile.3.region()).collect();
+        let fields = redact::fields_in(&regions);
+        for (index, (_, _, image, place)) in tiles.iter_mut().enumerate() {
+            blurred[index] = redact::cover(image, *place, &fields);
+        }
+    }
+    let mut out = Vec::new();
+    for (index, (id, shot, image, _)) in tiles.into_iter().enumerate() {
+        let image = downscale(image, max_width);
+        let width = image.width();
+        let height = image.height();
+        let Ok(encoded) = encode_png(image) else {
+            continue;
+        };
+        out.push(WindowPreview {
+            id,
+            name: pretty_label(&shot.app, &shot.title),
+            data_url: encoded.to_payload().data_url,
+            width,
+            height,
+            passwords_blurred: blurred[index],
+        });
+    }
+    out
 }
 
 fn capture_id(

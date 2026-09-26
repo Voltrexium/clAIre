@@ -105,14 +105,18 @@ pub fn fields_in(regions: &[ScreenRect]) -> Vec<ScreenRect> {
     }
 }
 
-pub fn cover(image: &mut RgbaImage, place: Placement, fields: &[ScreenRect]) {
+/// Returns whether any password rectangle landed on this image.
+pub fn cover(image: &mut RgbaImage, place: Placement, fields: &[ScreenRect]) -> bool {
     let width = image.width();
     let height = image.height();
+    let mut covered = false;
     for field in fields {
         if let Some((x, y, w, h)) = place.map_rect(*field, width, height) {
             pixelate(image, x, y, w, h);
+            covered = true;
         }
     }
+    covered
 }
 
 fn pixelate(image: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32) {
@@ -699,7 +703,7 @@ mod tests {
         }
         let before = image.get_pixel(2, 2).0;
         let place = Placement::new(0, 0, 80, 40, 80, 40);
-        cover(
+        let blurred = cover(
             &mut image,
             place,
             &[ScreenRect {
@@ -709,6 +713,7 @@ mod tests {
                 height: 16,
             }],
         );
+        assert!(blurred);
         assert_eq!(image.get_pixel(2, 2).0, before);
         let covered = image.get_pixel(36, 18).0;
         assert_ne!(covered, [36, 18, 0, 255]);

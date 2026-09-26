@@ -75,6 +75,7 @@ pub fn run() {
             commands::storage_info,
             commands::recapture,
             commands::list_displays,
+            commands::preview_windows,
             commands::capture_displays,
             commands::set_capture_mode,
         ])

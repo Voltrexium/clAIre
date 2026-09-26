@@ -69,12 +69,22 @@ export interface DisplayInfo {
   title?: string;
 }
 
+export interface WindowPreview {
+  id: number;
+  name: string;
+  dataUrl: string;
+  width: number;
+  height: number;
+  passwordsBlurred?: boolean;
+}
+
 export interface CapturePayload {
   dataUrl: string;
   width: number;
   height: number;
   capturedAt: string;
   mode: string;
+  passwordsBlurred?: boolean;
 }
 
 export interface StorageInfo {

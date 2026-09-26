@@ -11,15 +11,16 @@ import {
   listDisplays,
   newChat,
   openUrl,
+  previewWindows,
   recapture,
   setCaptureMode as persistCaptureMode,
   setWindowMode,
   fitOverlay,
 } from "../shared/api";
-import DisplayPicker from "../shared/DisplayPicker";
+import DisplayPicker, { importantWindows, quarterSize } from "../shared/DisplayPicker";
 import SettingsPage from "../settings/Settings";
 import { renderLiteMarkdown } from "../shared/markdown";
-import type { AskStatus, CaptureMode, CapturePayload, DisplayInfo, SearchSource } from "../shared/types";
+import type { AskStatus, CaptureMode, CapturePayload, DisplayInfo, SearchSource, WindowPreview } from "../shared/types";
 
 function usableLabel(mode?: string | null) {
   if (!mode || mode === "current window") return "";
@@ -97,6 +98,49 @@ async function writeClipboard(text: string) {
   }
 }
 
+type ShotAnchor = { top: number; left: number; right: number; bottom: number };
+
+type ShotPop = {
+  live: boolean;
+  src: string;
+  alt: string;
+  anchor: ShotAnchor;
+};
+
+const SHOT_POP_MAX_W = 520;
+const SHOT_POP_MAX_H = 360;
+const SHOT_POP_GAP = 8;
+
+function ShotHover({ src, alt, anchor }: { src: string; alt: string; anchor: ShotAnchor }) {
+  const { box, maxW, maxH } = shotPopLayout(anchor);
+  return (
+    <div className="shot-pop" style={box} role="tooltip">
+      <img src={src} alt={alt} style={{ maxWidth: maxW, maxHeight: maxH }} />
+    </div>
+  );
+}
+
+function anchorOf(el: HTMLElement): ShotAnchor {
+  const rect = el.getBoundingClientRect();
+  return { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
+}
+
+function shotPopLayout(anchor: ShotAnchor) {
+  const margin = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const maxW = Math.min(SHOT_POP_MAX_W, Math.max(120, vw - margin * 2));
+  const spaceAbove = Math.max(0, anchor.top - margin - SHOT_POP_GAP);
+  const spaceBelow = Math.max(0, vh - anchor.bottom - margin - SHOT_POP_GAP);
+  const above = spaceAbove >= spaceBelow;
+  const maxH = Math.min(SHOT_POP_MAX_H, above ? spaceAbove : spaceBelow);
+  const left = Math.min(Math.max(anchor.left, margin), Math.max(margin, vw - maxW - margin));
+  const box: React.CSSProperties = above
+    ? { left, bottom: vh - anchor.top + SHOT_POP_GAP, maxWidth: maxW }
+    : { left, top: anchor.bottom + SHOT_POP_GAP, maxWidth: maxW };
+  return { box, maxW, maxH };
+}
+
 type ChatTurnProps = {
   entry: LogEntry;
   index: number;
@@ -117,6 +161,8 @@ type ChatTurnProps = {
   latestUserRef: React.MutableRefObject<HTMLElement | null>;
   latestAssistantRef: React.MutableRefObject<HTMLElement | null>;
   onOpenPreview: (src: string, alt: string) => void;
+  onHoverShot: (live: boolean, src: string, alt: string, el: HTMLElement) => void;
+  onHideShot: () => void;
   onToggleQuery: () => void;
   onCopyOutput: (index: number, text: string) => void;
   onAnswerClick: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -142,6 +188,8 @@ const ChatTurn = memo(function ChatTurn({
   latestUserRef,
   latestAssistantRef,
   onOpenPreview,
+  onHoverShot,
+  onHideShot,
   onToggleQuery,
   onCopyOutput,
   onAnswerClick,
@@ -168,6 +216,14 @@ const ChatTurn = memo(function ChatTurn({
             className="log-shot"
             type="button"
             title="Open screenshot"
+            onMouseEnter={(event) =>
+              onHoverShot(false, entry.image!, entry.imageAlt || "Captured window", event.currentTarget)
+            }
+            onMouseLeave={onHideShot}
+            onFocus={(event) =>
+              onHoverShot(false, entry.image!, entry.imageAlt || "Captured window", event.currentTarget)
+            }
+            onBlur={onHideShot}
             onClick={() => onOpenPreview(entry.image!, entry.imageAlt || "Captured window")}
           >
             <img src={entry.image} alt={entry.imageAlt || "Captured window"} />
@@ -259,6 +315,7 @@ export default function Overlay() {
   const [askStatus, setAskStatus] = useState<AskStatus | null>(null);
   const [captureMode, setCaptureMode] = useState<CaptureMode>("current");
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
+  const [previews, setPreviews] = useState<Record<number, WindowPreview>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const showSettingsRef = useRef(false);
@@ -271,13 +328,23 @@ export default function Overlay() {
   const [capturing, setCapturing] = useState(false);
   const [windowLabel, setWindowLabel] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [passwordNotice, setPasswordNotice] = useState(false);
+  const passwordNoticeRef = useRef(false);
   const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null);
   const previewRef = useRef<{ src: string; alt: string } | null>(null);
+  const [shotPop, setShotPop] = useState<ShotPop | null>(null);
+  const shotPopRef = useRef<ShotPop | null>(null);
   const debounceRef = useRef(0);
   const selectedIdsRef = useRef<number[]>([]);
   const captureModeRef = useRef<CaptureMode>("current");
   const captureRef = useRef<CapturePayload | null>(null);
   const pinWindowIdRef = useRef<number | null>(null);
+  const lastCurrentIdRef = useRef<number | null>(null);
+  const [lastCurrentId, setLastCurrentId] = useState<number | null>(null);
+  const [singleTargetId, setSingleTargetId] = useState<number | null>(null);
+  const [tileOrder, setTileOrder] = useState<number[]>([]);
+  const [previewsPending, setPreviewsPending] = useState(false);
+  const previewGen = useRef(0);
   const pinQueryRef = useRef(false);
   const followRef = useRef(false);
   const ignoreScrollRef = useRef(false);
@@ -286,6 +353,9 @@ export default function Overlay() {
   const chatLogRef = useRef<HTMLElement | null>(null);
   const scrollerWrapRef = useRef<HTMLDivElement>(null);
   const windowListBusy = useRef(false);
+  const overlayFocusedRef = useRef(false);
+  const [overlayFocused, setOverlayFocused] = useState(false);
+  const previewBusy = useRef(false);
   const tokenBuf = useRef("");
   const tokenTimer = useRef(0);
   const tokenGen = useRef(0);
@@ -496,8 +566,19 @@ export default function Overlay() {
           setPreview(null);
           return;
         }
+        if (shotPopRef.current) {
+          shotPopRef.current = null;
+          setShotPop(null);
+          return;
+        }
         if (showSettingsRef.current) {
           closeSettings();
+          focusInput();
+          return;
+        }
+        if (passwordNoticeRef.current) {
+          passwordNoticeRef.current = false;
+          setPasswordNotice(false);
           focusInput();
           return;
         }
@@ -551,7 +632,33 @@ export default function Overlay() {
   }, []);
 
   useEffect(() => {
-    if (captureMode !== "all" || showSettings) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    const apply = (focused: boolean) => {
+      overlayFocusedRef.current = focused;
+      setOverlayFocused(focused);
+    };
+    void getCurrentWindow()
+      .onFocusChanged((event) => apply(event.payload))
+      .then((stop) => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => undefined);
+    void getCurrentWindow()
+      .isFocused()
+      .then((focused) => {
+        if (!cancelled) apply(focused);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (showSettings) return;
     let cancelled = false;
     const tick = () => {
       void (async () => {
@@ -569,7 +676,7 @@ export default function Overlay() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [captureMode, showSettings, refreshWindowList]);
+  }, [showSettings, refreshWindowList]);
 
   function setMode(next: CaptureMode) {
     if (next === captureModeRef.current) {
@@ -594,22 +701,36 @@ export default function Overlay() {
     }
     if (next === "current") {
       const picked = selectedIdsRef.current;
-      if (picked.length === 1) {
-        pinWindowIdRef.current = picked[0];
-        const name = displays.find((display) => display.id === picked[0])?.name;
-        if (name) setWindowLabel(name);
-      }
+      const specific = picked.length === 1 ? picked[0] : null;
+      const targetId = specific ?? lastCurrentIdRef.current;
+      if (specific != null) pinWindowIdRef.current = specific;
+      setSingleTargetId(targetId);
+      const previewReady = targetId != null && !!previews[targetId]?.dataUrl;
+      const kept =
+        specific == null &&
+        !!captureRef.current?.dataUrl &&
+        captureRef.current.mode !== "selected windows";
       selectedIdsRef.current = [];
       setSelectedIds([]);
-      captureStale.current = true;
-      captureRef.current = null;
-      setCapture(null);
-      setWindowLabel("");
+      if (!kept) {
+        captureStale.current = !previewReady;
+        captureRef.current = null;
+        setCapture(null);
+      } else {
+        captureStale.current = false;
+      }
+      const named =
+        (targetId != null && displays.find((display) => display.id === targetId)?.name) ||
+        (targetId != null && previews[targetId]?.name) ||
+        "";
+      if (named) setWindowLabel(named);
+      else if (!kept && !previewReady) setWindowLabel("");
       void persistCaptureMode("current", []);
-      void refreshCapture();
+      if (!kept && !previewReady) void refreshCapture();
       return;
     }
     captureStale.current = true;
+    setTileOrder(importantWindows(displays).map((item) => item.id));
     void persistCaptureMode("all", selectedIdsRef.current);
     refreshWindowList();
   }
@@ -726,7 +847,7 @@ export default function Overlay() {
     const observer = new ResizeObserver(() => schedule());
     observer.observe(el);
     el.querySelectorAll(
-      ".titlebar, .overlay-body, .overlay-body > *, .chat-log, .composer-block, .meta, .window-picker, .window-list",
+      ".titlebar, .overlay-body, .overlay-body > *, .chat-log, .composer-block, .meta, .window-picker-wrap, .window-tiles",
     ).forEach((node) => {
       observer.observe(node);
     });
@@ -836,6 +957,10 @@ export default function Overlay() {
   }, [continuing]);
 
   function onChatScroll() {
+    if (shotPopRef.current) {
+      shotPopRef.current = null;
+      setShotPop(null);
+    }
     if (ignoreScrollRef.current) {
       updateChatChrome();
       return;
@@ -891,6 +1016,20 @@ export default function Overlay() {
     const next = { src, alt };
     previewRef.current = next;
     setPreview(next);
+    shotPopRef.current = null;
+    setShotPop(null);
+  }, []);
+
+  const showShotPop = useCallback((live: boolean, src: string, alt: string, el: HTMLElement) => {
+    const next = { live, src, alt, anchor: anchorOf(el) };
+    shotPopRef.current = next;
+    setShotPop(next);
+  }, []);
+
+  const hideShotPop = useCallback(() => {
+    if (!shotPopRef.current) return;
+    shotPopRef.current = null;
+    setShotPop(null);
   }, []);
 
   const toggleQueryExpanded = useCallback(() => {
@@ -927,6 +1066,10 @@ export default function Overlay() {
         await refreshCapture();
       }
       const attached = captureModeRef.current === "none" ? null : captureRef.current;
+      if (attached?.dataUrl && attached.passwordsBlurred) {
+        passwordNoticeRef.current = true;
+        setPasswordNotice(true);
+      }
       if (attached?.dataUrl) {
         setLog((current) => {
           const firstUser = current.findIndex((entry) => entry.role === "user");
@@ -1041,6 +1184,110 @@ export default function Overlay() {
     [beginCaptureWait, finishCaptureWait],
   );
 
+  useEffect(() => {
+    if (!overlayFocused || showSettings) return;
+    const timer = window.setTimeout(() => {
+      if (captureModeRef.current === "none" || capturingRef.current) return;
+      void refreshCapture();
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [overlayFocused, showSettings, refreshCapture]);
+
+  useEffect(() => {
+    if (captureMode !== "all") return;
+    setTileOrder((order) => {
+      if (displays.length === 0) return order;
+      if (order.length === 0) return importantWindows(displays).map((item) => item.id);
+      const alive = new Set(displays.map((item) => item.id));
+      const kept = order.filter((id) => alive.has(id));
+      if (kept.length === order.length) return order;
+      return kept;
+    });
+  }, [captureMode, displays]);
+
+  const shownDisplays = useMemo(() => {
+    if (captureMode !== "all") return [];
+    const byId = new Map(displays.map((item) => [item.id, item]));
+    const locked = tileOrder
+      .map((id) => byId.get(id))
+      .filter((item): item is DisplayInfo => item != null);
+    if (locked.length > 0) return locked;
+    return importantWindows(displays);
+  }, [captureMode, displays, tileOrder]);
+  const shownKey = shownDisplays.map((item) => item.id).join(",");
+  const previewKey = useMemo(() => {
+    const ids =
+      captureMode === "all" && tileOrder.length > 0
+        ? tileOrder
+        : importantWindows(displays).map((item) => item.id);
+    return [...ids].sort((a, b) => a - b).join(",");
+  }, [captureMode, tileOrder, displays]);
+  useEffect(() => {
+    const current = displays.find((item) => item.current);
+    if (!current && lastCurrentIdRef.current != null) return;
+    const nextId = current?.id ?? importantWindows(displays)[0]?.id;
+    if (nextId == null || nextId === lastCurrentIdRef.current) return;
+    lastCurrentIdRef.current = nextId;
+    setLastCurrentId(nextId);
+  }, [displays]);
+
+  const currentPreview = useMemo(() => {
+    const focusedId = displays.find((item) => item.current)?.id ?? null;
+    const id = singleTargetId ?? focusedId ?? lastCurrentId;
+    return id != null ? previews[id] : undefined;
+  }, [singleTargetId, displays, previews, lastCurrentId]);
+
+  useEffect(() => {
+    if (captureMode !== "all" || !shownKey) return;
+    const allowed = new Set(shownKey.split(",").map(Number));
+    const current = selectedIdsRef.current;
+    const next = current.filter((id) => allowed.has(id));
+    if (next.length === current.length) return;
+    selectedIdsRef.current = next;
+    setSelectedIds(next);
+    captureStale.current = true;
+    void persistCaptureMode("all", next);
+    void refreshCapture();
+  }, [captureMode, shownKey, refreshCapture]);
+
+  useEffect(() => {
+    if (showSettings || !overlayFocused || !previewKey) return;
+    let cancelled = false;
+    let wait = 0;
+    const ids = previewKey.split(",").map(Number);
+    const load = () => {
+      if (cancelled || !overlayFocusedRef.current) return;
+      if (previewBusy.current) {
+        window.clearTimeout(wait);
+        wait = window.setTimeout(load, 200);
+        return;
+      }
+      window.clearTimeout(wait);
+      previewBusy.current = true;
+      const gen = ++previewGen.current;
+      setPreviewsPending(true);
+      void previewWindows(ids)
+        .then((rows) => {
+          if (cancelled || !overlayFocusedRef.current) return;
+          setPreviews((prev) => {
+            const next = { ...prev };
+            for (const row of rows) next[row.id] = row;
+            return next;
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          previewBusy.current = false;
+          if (previewGen.current === gen) setPreviewsPending(false);
+        });
+    };
+    load();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(wait);
+    };
+  }, [showSettings, overlayFocused, previewKey]);
+
   function onToggleScreen(id: number) {
     const ids = selectedIdsRef.current;
     const adding = !ids.includes(id);
@@ -1071,6 +1318,24 @@ export default function Overlay() {
         ].join(" ")}
         ref={cardRef}
       >
+        {passwordNotice && (
+          <div className="notice-pop" role="dialog" aria-modal="true" aria-labelledby="password-notice-title">
+            <strong id="password-notice-title">Password blurred</strong>
+            <p>One or more password fields in this screenshot were blurred before it was sent.</p>
+            <button
+              className="ghost"
+              type="button"
+              autoFocus
+              onClick={() => {
+                passwordNoticeRef.current = false;
+                setPasswordNotice(false);
+                focusInput();
+              }}
+            >
+              OK
+            </button>
+          </div>
+        )}
         <div
           className="titlebar"
           data-tauri-drag-region
@@ -1127,35 +1392,6 @@ export default function Overlay() {
           <>
         {expanded && (
         <div className="overlay-body">
-        {captureMode === "current" && log.length === 0 && (
-          <section className="current-panel">
-            {capture ? (
-              <button
-                className={capturing ? "current-shot capturing" : "current-shot"}
-                type="button"
-                title="Recapture"
-                onClick={() => void refreshCapture()}
-              >
-                <img src={capture.dataUrl} alt={windowLabel || "Current window"} />
-              </button>
-            ) : (
-              <div className={capturing ? "current-shot placeholder capturing" : "current-shot placeholder"} />
-            )}
-            <div className="current-meta">
-              <strong title={windowLabel || undefined}>{windowLabel || "Current window"}</strong>
-              <span>
-                {capturing
-                  ? windowLabel
-                    ? "This window will be sent with your question"
-                    : "Finding window…"
-                  : capture
-                    ? `${capture.width}×${capture.height} will be sent with your question`
-                    : "No window yet"}
-              </span>
-            </div>
-          </section>
-        )}
-
         {error && <div className="banner error">{error}</div>}
 
         {log.length > 0 && (
@@ -1187,6 +1423,8 @@ export default function Overlay() {
                   latestUserRef={latestUserRef}
                   latestAssistantRef={latestAssistantRef}
                   onOpenPreview={openPreview}
+                  onHoverShot={showShotPop}
+                  onHideShot={hideShotPop}
                   onToggleQuery={toggleQueryExpanded}
                   onCopyOutput={copyOutput}
                   onAnswerClick={onAnswerClick}
@@ -1220,12 +1458,81 @@ export default function Overlay() {
           )}
         </div>
         <div className="composer-stack">
+        {captureMode === "current" && (
+          <div className="window-picker-wrap">
+            <div className="window-tiles count-1">
+              <button
+                className="window-tile on"
+                type="button"
+                title="Recapture"
+                onMouseEnter={(event) => {
+                  const src = capture?.dataUrl || currentPreview?.dataUrl;
+                  if (src) {
+                    showShotPop(
+                      Boolean(capture?.dataUrl),
+                      src,
+                      windowLabel || currentPreview?.name || "Current window",
+                      event.currentTarget,
+                    );
+                  }
+                }}
+                onMouseLeave={hideShotPop}
+                onFocus={(event) => {
+                  const src = capture?.dataUrl || currentPreview?.dataUrl;
+                  if (src) {
+                    showShotPop(
+                      Boolean(capture?.dataUrl),
+                      src,
+                      windowLabel || currentPreview?.name || "Current window",
+                      event.currentTarget,
+                    );
+                  }
+                }}
+                onBlur={hideShotPop}
+                onClick={() => void refreshCapture()}
+              >
+                <span
+                  className={
+                    capturing && (capture?.dataUrl || currentPreview?.dataUrl)
+                      ? "window-tile-shot pending"
+                      : "window-tile-shot"
+                  }
+                >
+                  {capture?.dataUrl ? (
+                    <img
+                      src={capture.dataUrl}
+                      alt={windowLabel || "Current window"}
+                      style={quarterSize(capture.width, capture.height)}
+                    />
+                  ) : currentPreview?.dataUrl ? (
+                    <img
+                      src={currentPreview.dataUrl}
+                      alt={currentPreview.name || windowLabel || "Current window"}
+                      style={quarterSize(currentPreview.width, currentPreview.height)}
+                    />
+                  ) : (
+                    <span className="window-tile-placeholder" style={quarterSize(1280, 720)} />
+                  )}
+                </span>
+                <span className="window-tile-bar" title={windowLabel || currentPreview?.name || undefined}>
+                  {capturing && !windowLabel && !currentPreview
+                    ? "Finding window…"
+                    : windowLabel || currentPreview?.name || "Current window"}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
         {captureMode === "all" && (
           <div className="window-picker-wrap">
             <DisplayPicker
-              displays={displays}
+              displays={shownDisplays}
               selectedIds={selectedIds}
+              previews={previews}
+              pending={previewsPending}
               onToggle={(id) => void onToggleScreen(id)}
+              onHover={(src, alt, el) => showShotPop(false, src, alt, el)}
+              onLeave={hideShotPop}
             />
           </div>
         )}
@@ -1357,6 +1664,13 @@ export default function Overlay() {
         <button className="lightbox" type="button" onClick={closePreview} aria-label="Close screenshot">
           <img src={preview.src} alt={preview.alt} />
         </button>
+      )}
+      {shotPop && !preview && (shotPop.live ? capture?.dataUrl : shotPop.src) && (
+        <ShotHover
+          src={shotPop.live ? capture!.dataUrl : shotPop.src}
+          alt={shotPop.live ? windowLabel || shotPop.alt : shotPop.alt}
+          anchor={shotPop.anchor}
+        />
       )}
     </div>
   );

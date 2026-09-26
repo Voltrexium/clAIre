@@ -79,14 +79,37 @@ jobs:
         if: runner.os == 'Linux'
         run: echo "NO_STRIP=true" >> "$GITHUB_ENV"
 
-      - name: Choose macOS signing identity
+      - name: Configure macOS signing
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          REQUESTED_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$REQUESTED_IDENTITY" ]; then
-            echo "APPLE_SIGNING_IDENTITY=$REQUESTED_IDENTITY" >> "$GITHUB_ENV"
+          # An empty secret is still a set environment variable. Tauri treats
+          # that as a certificate and `security import` fails with
+          # SecKeychainItemImport. Export the Apple variables only when the
+          # certificate is actually present; otherwise ad-hoc sign.
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            delimiter="APPLE_SIGNING_EOF_$$"
+            write_env() {
+              {
+                echo "$1<<$delimiter"
+                printf '%s\n' "$2"
+                echo "$delimiter"
+              } >> "$GITHUB_ENV"
+            }
+            write_env APPLE_CERTIFICATE "$APPLE_CERTIFICATE"
+            write_env APPLE_CERTIFICATE_PASSWORD "$APPLE_CERTIFICATE_PASSWORD"
+            write_env APPLE_SIGNING_IDENTITY "$APPLE_SIGNING_IDENTITY"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              write_env APPLE_ID "$APPLE_ID"
+              write_env APPLE_PASSWORD "$APPLE_PASSWORD"
+              write_env APPLE_TEAM_ID "$APPLE_TEAM_ID"
+            fi
           else
             echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
           fi
@@ -94,11 +117,6 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: "1"

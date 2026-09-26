@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AskResult, CaptureMode, CapturePayload, DisplayInfo, Settings, StorageInfo } from "./types";
+import type {
+  AskResult,
+  CaptureMode,
+  CapturePayload,
+  DisplayInfo,
+  Settings,
+  StorageInfo,
+  WindowPreview,
+} from "./types";
 
 export function getSettings() {
   return invoke<Settings>("get_settings");
@@ -58,6 +66,10 @@ export function recapture(windowId?: number, forceCurrent = false) {
 
 export function listDisplays() {
   return invoke<DisplayInfo[]>("list_displays");
+}
+
+export function previewWindows(ids: number[]) {
+  return invoke<WindowPreview[]>("preview_windows", { ids });
 }
 
 export function captureDisplays(ids: number[]) {

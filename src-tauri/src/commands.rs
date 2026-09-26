@@ -572,6 +572,18 @@ pub async fn list_displays() -> Result<Vec<capture::DisplayInfo>, String> {
 }
 
 #[tauri::command]
+pub async fn preview_windows(
+    state: State<'_, AppState>,
+    ids: Vec<u32>,
+) -> Result<Vec<capture::WindowPreview>, String> {
+    let (max_width, redact) = with_settings(&state, |settings| {
+        (settings.downscale_max_width, settings.redact_passwords)
+    })?;
+    let ids: Vec<u32> = ids.into_iter().take(4).collect();
+    run_blocking(move || Ok(capture::preview_windows(&ids, max_width, redact))).await
+}
+
+#[tauri::command]
 pub async fn capture_displays(
     app: AppHandle,
     state: State<'_, AppState>,
