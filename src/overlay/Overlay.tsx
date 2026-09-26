@@ -154,7 +154,9 @@ function ShotHover({
     return Number(box.width) / Math.max(1, Number(box.height));
   });
   const onClosedRef = useRef(onClosed);
-  onClosedRef.current = onClosed;
+  useEffect(() => {
+    onClosedRef.current = onClosed;
+  }, [onClosed]);
 
   useEffect(() => {
     let second = 0;
@@ -963,7 +965,9 @@ export default function Overlay() {
     setShotPop(null);
   }, [setShotPop]);
   const dropShotPopRef = useRef(dropShotPop);
-  dropShotPopRef.current = dropShotPop;
+  useEffect(() => {
+    dropShotPopRef.current = dropShotPop;
+  }, [dropShotPop]);
 
   const openPreview = useCallback((src: string, alt: string) => {
     setPreview({ src, alt });
@@ -988,7 +992,9 @@ export default function Overlay() {
     const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : SHOT_POP_MS + 40;
     shotTimerRef.current = window.setTimeout(() => dropShotPopRef.current(), delay);
   }, [setShotPop, shotPopRef]);
-  hideShotPopRef.current = hideShotPop;
+  useEffect(() => {
+    hideShotPopRef.current = hideShotPop;
+  }, [hideShotPop]);
 
   const toggleQueryExpanded = useCallback(() => {
     setQueryExpanded((open) => !open);
