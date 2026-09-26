@@ -53,7 +53,6 @@ export interface Settings {
   searchUsage: SearchUsage;
   historyLimit: number;
   downscaleMaxWidth: number;
-  redactPasswords: boolean;
 }
 
 export interface DisplayInfo {
@@ -75,7 +74,6 @@ export interface WindowPreview {
   dataUrl: string;
   width: number;
   height: number;
-  passwordsBlurred?: boolean;
 }
 
 export interface CapturePayload {
@@ -84,7 +82,6 @@ export interface CapturePayload {
   height: number;
   capturedAt: string;
   mode: string;
-  passwordsBlurred?: boolean;
 }
 
 export interface StorageInfo {

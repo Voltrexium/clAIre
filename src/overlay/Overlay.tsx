@@ -97,40 +97,99 @@ type ShotPop = {
   src: string;
   alt: string;
   anchor: ShotAnchor;
+  closing: boolean;
 };
 
-const SHOT_POP_MAX_W = 520;
-const SHOT_POP_MAX_H = 360;
-const SHOT_POP_GAP = 8;
-
-function ShotHover({ src, alt, anchor }: { src: string; alt: string; anchor: ShotAnchor }) {
-  const { box, maxW, maxH } = shotPopLayout(anchor);
-  return (
-    <div className="shot-pop" style={box} role="tooltip">
-      <img src={src} alt={alt} style={{ maxWidth: maxW, maxHeight: maxH }} />
-    </div>
-  );
-}
+const SHOT_POP_MARGIN = 12;
+const SHOT_POP_MS = 320;
 
 function anchorOf(el: HTMLElement): ShotAnchor {
   const rect = el.getBoundingClientRect();
   return { top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom };
 }
 
-function shotPopLayout(anchor: ShotAnchor) {
-  const margin = 8;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const maxW = Math.min(SHOT_POP_MAX_W, Math.max(120, vw - margin * 2));
-  const spaceAbove = Math.max(0, anchor.top - margin - SHOT_POP_GAP);
-  const spaceBelow = Math.max(0, vh - anchor.bottom - margin - SHOT_POP_GAP);
-  const above = spaceAbove >= spaceBelow;
-  const maxH = Math.min(SHOT_POP_MAX_H, above ? spaceAbove : spaceBelow);
-  const left = Math.min(Math.max(anchor.left, margin), Math.max(margin, vw - maxW - margin));
-  const box: React.CSSProperties = above
-    ? { left, bottom: vh - anchor.top + SHOT_POP_GAP, maxWidth: maxW }
-    : { left, top: anchor.bottom + SHOT_POP_GAP, maxWidth: maxW };
-  return { box, maxW, maxH };
+function rectBox(anchor: ShotAnchor): React.CSSProperties {
+  return {
+    left: anchor.left,
+    top: anchor.top,
+    width: Math.max(0, anchor.right - anchor.left),
+    height: Math.max(0, anchor.bottom - anchor.top),
+  };
+}
+
+function fitBox(aspect: number): React.CSSProperties {
+  const maxW = Math.max(0, window.innerWidth - SHOT_POP_MARGIN * 2);
+  const maxH = Math.max(0, window.innerHeight - SHOT_POP_MARGIN * 2);
+  const safe = aspect > 0 ? aspect : 1;
+  let width = maxW;
+  let height = width / safe;
+  if (height > maxH) {
+    height = maxH;
+    width = height * safe;
+  }
+  return {
+    left: (window.innerWidth - width) / 2,
+    top: (window.innerHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+function ShotHover({
+  src,
+  alt,
+  anchor,
+  closing,
+  onClosed,
+}: {
+  src: string;
+  alt: string;
+  anchor: ShotAnchor;
+  closing: boolean;
+  onClosed: () => void;
+}) {
+  const [grown, setGrown] = useState(false);
+  const [aspect, setAspect] = useState(() => {
+    const box = rectBox(anchor);
+    return Number(box.width) / Math.max(1, Number(box.height));
+  });
+  const onClosedRef = useRef(onClosed);
+  onClosedRef.current = onClosed;
+
+  useEffect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(() => setGrown(true));
+    });
+    return () => {
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+    };
+  }, []);
+
+  const open = grown && !closing;
+  return (
+    <div
+      className={open ? "shot-pop open" : "shot-pop"}
+      style={open ? fitBox(aspect) : rectBox(anchor)}
+      role="tooltip"
+      onTransitionEnd={(event) => {
+        if (event.target !== event.currentTarget || event.propertyName !== "width") return;
+        if (closing) onClosedRef.current();
+      }}
+    >
+      <img
+        src={src}
+        alt={alt}
+        onLoad={(event) => {
+          const img = event.currentTarget;
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+            setAspect(img.naturalWidth / img.naturalHeight);
+          }
+        }}
+      />
+    </div>
+  );
 }
 
 type TurnChrome = {
@@ -326,9 +385,17 @@ export default function Overlay() {
   const [capturing, setCapturing] = useState(false);
   const [windowLabel, setWindowLabel] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
-  const [passwordNotice, setPasswordNotice, passwordNoticeRef] = useMirrored(false);
   const [preview, setPreview, previewRef] = useMirrored<{ src: string; alt: string } | null>(null);
   const [shotPop, setShotPop, shotPopRef] = useMirrored<ShotPop | null>(null);
+  const liftedShotRef = useRef<HTMLImageElement | null>(null);
+  const shotTimerRef = useRef(0);
+  const hideShotPopRef = useRef<() => void>(() => {});
+
+  useLayoutEffect(() => {
+    const img = liftedShotRef.current;
+    if (shotPop) img?.classList.add("shot-lifted");
+    else img?.classList.remove("shot-lifted");
+  }, [shotPop]);
   const debounceRef = useRef(0);
   const captureRef = useRef<CapturePayload | null>(null);
   const pinWindowIdRef = useRef<number | null>(null);
@@ -566,16 +633,11 @@ export default function Overlay() {
           return;
         }
         if (shotPopRef.current) {
-          setShotPop(null);
+          hideShotPopRef.current();
           return;
         }
         if (showSettingsRef.current) {
           closeSettings();
-          focusInput();
-          return;
-        }
-        if (passwordNoticeRef.current) {
-          setPasswordNotice(false);
           focusInput();
           return;
         }
@@ -593,8 +655,9 @@ export default function Overlay() {
       window.clearTimeout(debounceRef.current);
       window.clearTimeout(copiedTimer.current);
       window.clearTimeout(copiedSnippetTimer.current);
+      window.clearTimeout(shotTimerRef.current);
     };
-  }, [beginCaptureWait, captureModeRef, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, passwordNoticeRef, previewRef, resetAsk, setCaptureMode, setPasswordNotice, setPreview, setSelectedIds, setShotPop, shotPopRef, showSettingsRef]);
+  }, [beginCaptureWait, captureModeRef, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, previewRef, resetAsk, setCaptureMode, setPreview, setSelectedIds, setShotPop, shotPopRef, showSettingsRef]);
 
   function closePreview() {
     setPreview(null);
@@ -840,7 +903,7 @@ export default function Overlay() {
 
   function onChatScroll() {
     if (shotPopRef.current) {
-      setShotPop(null);
+      dropShotPopRef.current();
     }
     if (ignoreScrollRef.current) {
       updateChatChrome();
@@ -893,19 +956,39 @@ export default function Overlay() {
     if (href) void openUrl(href);
   }, []);
 
+  const dropShotPop = useCallback(() => {
+    window.clearTimeout(shotTimerRef.current);
+    liftedShotRef.current?.classList.remove("shot-lifted");
+    liftedShotRef.current = null;
+    setShotPop(null);
+  }, [setShotPop]);
+  const dropShotPopRef = useRef(dropShotPop);
+  dropShotPopRef.current = dropShotPop;
+
   const openPreview = useCallback((src: string, alt: string) => {
     setPreview({ src, alt });
-    setShotPop(null);
-  }, [setPreview, setShotPop]);
+    dropShotPop();
+  }, [dropShotPop, setPreview]);
 
   const showShotPop = useCallback((live: boolean, src: string, alt: string, el: HTMLElement) => {
-    setShotPop({ live, src, alt, anchor: anchorOf(el) });
+    window.clearTimeout(shotTimerRef.current);
+    const img = el.querySelector("img");
+    if (liftedShotRef.current && liftedShotRef.current !== img) {
+      liftedShotRef.current.classList.remove("shot-lifted");
+    }
+    liftedShotRef.current = img;
+    setShotPop({ live, src, alt, anchor: anchorOf(img ?? el), closing: false });
   }, [setShotPop]);
 
   const hideShotPop = useCallback(() => {
-    if (!shotPopRef.current) return;
-    setShotPop(null);
+    const current = shotPopRef.current;
+    if (!current) return;
+    if (!current.closing) setShotPop({ ...current, closing: true });
+    window.clearTimeout(shotTimerRef.current);
+    const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : SHOT_POP_MS + 40;
+    shotTimerRef.current = window.setTimeout(() => dropShotPopRef.current(), delay);
   }, [setShotPop, shotPopRef]);
+  hideShotPopRef.current = hideShotPop;
 
   const toggleQueryExpanded = useCallback(() => {
     setQueryExpanded((open) => !open);
@@ -941,9 +1024,6 @@ export default function Overlay() {
         await refreshCapture();
       }
       const attached = captureModeRef.current === "none" ? null : captureRef.current;
-      if (attached?.dataUrl && attached.passwordsBlurred) {
-        setPasswordNotice(true);
-      }
       if (attached?.dataUrl) {
         setLog((current) => {
           const firstUser = current.findIndex((entry) => entry.role === "user");
@@ -1229,23 +1309,6 @@ export default function Overlay() {
         ].join(" ")}
         ref={cardRef}
       >
-        {passwordNotice && (
-          <div className="notice-pop" role="dialog" aria-modal="true" aria-labelledby="password-notice-title">
-            <strong id="password-notice-title">Password blurred</strong>
-            <p>One or more password fields in this screenshot were blurred before it was sent.</p>
-            <button
-              className="ghost"
-              type="button"
-              autoFocus
-              onClick={() => {
-                setPasswordNotice(false);
-                focusInput();
-              }}
-            >
-              OK
-            </button>
-          </div>
-        )}
         <div
           className="titlebar"
           data-tauri-drag-region
@@ -1565,6 +1628,8 @@ export default function Overlay() {
           src={shotPop.live ? capture!.dataUrl : shotPop.src}
           alt={shotPop.live ? windowLabel || shotPop.alt : shotPop.alt}
           anchor={shotPop.anchor}
+          closing={shotPop.closing}
+          onClosed={dropShotPop}
         />
       )}
     </div>

@@ -22,8 +22,6 @@ pub struct CapturePayload {
     pub height: u32,
     pub captured_at: String,
     pub mode: String,
-    #[serde(default)]
-    pub passwords_blurred: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -34,7 +32,6 @@ pub struct Capture {
     pub captured_at: String,
     pub mode: String,
     pub windows: Vec<WindowShot>,
-    pub passwords_blurred: bool,
 }
 
 impl Capture {
@@ -48,7 +45,6 @@ impl Capture {
             height: self.height,
             captured_at: self.captured_at.clone(),
             mode: self.mode.clone(),
-            passwords_blurred: self.passwords_blurred,
         }
     }
 }
@@ -120,6 +116,5 @@ pub fn encode_png(img: image::RgbaImage) -> Result<Capture, String> {
         captured_at: chrono::Local::now().to_rfc3339(),
         mode: String::new(),
         windows: Vec::new(),
-        passwords_blurred: false,
     })
 }

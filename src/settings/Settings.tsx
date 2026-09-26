@@ -40,7 +40,6 @@ const DEFAULTS: Settings = {
   searchUsage: EMPTY_USAGE,
   historyLimit: 6,
   downscaleMaxWidth: 1280,
-  redactPasswords: true,
 };
 
 const SEARCH_PROVIDERS: { id: SearchProvider; label: string }[] = [
@@ -371,22 +370,6 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
         </div>
         <p className="hint">{usageLine(settings)}</p>
         <p className="hint">Count and cap are stored per API key for each search service.</p>
-      </section>
-
-      <section>
-        <h2>Privacy</h2>
-        <label className="toggle">
-          <input
-            type="checkbox"
-            checked={settings.redactPasswords}
-            onChange={(e) => patch("redactPasswords", e.target.checked)}
-          />
-          Blur password fields in screenshots
-        </label>
-        <p className="hint">
-          Password boxes reported by the system are covered before a capture is saved or sent. macOS also needs
-          Accessibility permission. Secrets typed in a terminal, or drawn by an app that hides its fields, stay visible.
-        </p>
       </section>
 
       <section>

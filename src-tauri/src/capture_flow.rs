@@ -114,11 +114,10 @@ pub fn start_active_watch(app: AppHandle) {
             if overlay_hidden(&app) {
                 continue;
             }
-            let (current_mode, max_width, redact) = match app.state::<AppState>().settings.lock() {
+            let (current_mode, max_width) = match app.state::<AppState>().settings.lock() {
                 Ok(settings) => (
                     settings.capture_mode == CaptureMode::Current,
                     settings.downscale_max_width,
-                    settings.redact_passwords,
                 ),
                 Err(_) => continue,
             };
@@ -156,7 +155,7 @@ pub fn start_active_watch(app: AppHandle) {
             }
             let target = peek.clone();
             schedule_recapture(&app, move |shot_app| {
-                recapture_pinned(shot_app, target, max_width, redact)
+                recapture_pinned(shot_app, target, max_width)
             });
         })
     {
@@ -207,25 +206,21 @@ fn recapture_pinned(
     app: &AppHandle,
     target: capture::CurrentTarget,
     max_width: u32,
-    redact: bool,
 ) -> Result<CapturePayload, String> {
     let (mut capture, label) = match target.id {
-        Some(id) => match capture::capture_ids(&[id], max_width, redact) {
+        Some(id) => match capture::capture_ids(&[id], max_width) {
             Ok(capture) => (capture, target.label.clone()),
             Err(_) => {
                 let fresh = capture::current_target();
                 pin_current(app, &fresh);
                 let capture = match fresh.id {
-                    Some(id) => capture::capture_ids(&[id], max_width, redact)?,
-                    None => capture::capture_primary(max_width, redact)?,
+                    Some(id) => capture::capture_ids(&[id], max_width)?,
+                    None => capture::capture_primary(max_width)?,
                 };
                 (capture, fresh.label)
             }
         },
-        None => (
-            capture::capture_primary(max_width, redact)?,
-            target.label.clone(),
-        ),
+        None => (capture::capture_primary(max_width)?, target.label.clone()),
     };
     if !label.is_empty() {
         capture.mode = label;
@@ -238,8 +233,8 @@ pub(crate) fn recapture_memory(
     window_id: Option<u32>,
     force_current: bool,
 ) -> Result<CapturePayload, String> {
-    let (max_width, redact) = with_settings(&app.state::<AppState>(), |settings| {
-        (settings.downscale_max_width, settings.redact_passwords)
+    let max_width = with_settings(&app.state::<AppState>(), |settings| {
+        settings.downscale_max_width
     })?;
     let target = if force_current {
         let target = capture::peek_active();
@@ -259,23 +254,23 @@ pub(crate) fn recapture_memory(
             None => pinned_target(app),
         }
     };
-    recapture_pinned(app, target, max_width, redact)
+    recapture_pinned(app, target, max_width)
 }
 
 pub(crate) fn recapture_then_show(app: &AppHandle) {
-    let (max_width, redact) = app
+    let max_width = app
         .state::<AppState>()
         .settings
         .lock()
-        .map(|settings| (settings.downscale_max_width, settings.redact_passwords))
-        .unwrap_or((1280, true));
+        .map(|settings| settings.downscale_max_width)
+        .unwrap_or(1280);
     let peeked = capture::peek_active();
     if peeked.id.is_some() {
         note_target(app, &peeked, true);
         let _ = app.emit("claire://summoned", peeked.label.clone());
         show_collapsed(app);
         schedule_recapture(app, move |work_app| {
-            recapture_pinned(work_app, peeked, max_width, redact)
+            recapture_pinned(work_app, peeked, max_width)
         });
         return;
     }
@@ -293,6 +288,6 @@ pub(crate) fn recapture_then_show(app: &AppHandle) {
         pin_current(work_app, &target);
         emit_target(work_app, &target, true);
         let _ = work_app.emit("claire://summoned", target.label.clone());
-        recapture_pinned(work_app, target, max_width, redact)
+        recapture_pinned(work_app, target, max_width)
     });
 }

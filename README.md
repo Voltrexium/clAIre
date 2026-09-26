@@ -73,8 +73,6 @@ Installers are written to `src-tauri/target/release/bundle/` (`.deb` / AppImage 
 5. Set the global hotkey (default `Ctrl/Cmd+Shift+Space`). On the overlay, choose no window, the current window, or several windows. The hotkey always starts on the current window. Saving Settings keeps whichever capture mode is already active.
 6. Save. Press the hotkey: clAIre captures first, then focuses the overlay.
 
-Password fields reported by the operating system are covered before a screenshot is saved or sent. That option is on by default. On macOS it also needs Accessibility permission. Text typed in a terminal, or drawn by an app that hides its fields, is not covered.
-
 A `.env` file next to the project (or the same variables in the environment) is applied on every launch, including over saved settings:
 
 | Variable | Effect |
@@ -102,7 +100,7 @@ API keys are stored in the operating system credential store, not in `settings.j
 | Global hotkey | Capture the current window, then show the compact ask bar (always on top, not in the taskbar). Press again to hide and clear the chat. |
 | Enter | Send the query. The same frameless window grows to fit the thread. |
 | Shift+Enter | Newline |
-| Esc | Hide to the tray and clear the chat. Closes an open screenshot preview, the settings view, or the password notice first. |
+| Esc | Hide to the tray and clear the chat. Closes an open screenshot preview or the settings view first. |
 | Hide (–) or the window close button | Hide to the tray and clear the chat. The process keeps running. |
 | Settings | Settings view inside the overlay. The window grows to fit it. |
 | Multiple windows | Pick windows to capture. The list refreshes about every 1.5 seconds while that mode is open. |
@@ -138,8 +136,7 @@ src/shared/                  IPC types, provider lists, and API wrappers
 src-tauri/src/capture.rs     Screenshot and window listing (xcap, plus X11 on Linux)
 src-tauri/src/capture_flow.rs  Capture, then show or update the overlay
 src-tauri/src/linux_windows.rs Extra Linux window lists (AT-SPI, Hyprland, Sway, niri)
-src-tauri/src/linux_a11y.rs  AT-SPI passwords and Wayland window frames
-src-tauri/src/redact.rs      Cover password fields before a shot is stored or sent
+src-tauri/src/linux_a11y.rs  AT-SPI helpers for Wayland window frames
 src-tauri/src/commands.rs    Tauri commands (ask, capture, settings, window)
 src-tauri/src/hotkey.rs      Global shortcut registration
 src-tauri/src/tray.rs        Background tray persistence

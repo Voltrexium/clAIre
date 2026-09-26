@@ -32,19 +32,6 @@ sha2 = "0.10"
 xcb = { version = "1.7", features = ["randr"] }
 zbus = { version = "5", default-features = false, features = ["blocking-api"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation = "0.10"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
-  "Win32_Foundation",
-  "Win32_System_Com",
-  "Win32_System_Ole",
-  "Win32_System_Variant",
-  "Win32_UI_Accessibility",
-  "Win32_UI_WindowsAndMessaging",
-] }
-
 [profile.dev.package.image]
 opt-level = 3
 

@@ -297,11 +297,9 @@ pub async fn preview_windows(
     state: State<'_, AppState>,
     ids: Vec<u32>,
 ) -> Result<Vec<capture::WindowPreview>, String> {
-    let (max_width, redact) = with_settings(&state, |settings| {
-        (settings.downscale_max_width, settings.redact_passwords)
-    })?;
+    let max_width = with_settings(&state, |settings| settings.downscale_max_width)?;
     let ids: Vec<u32> = ids.into_iter().take(4).collect();
-    run_blocking(move || Ok(capture::preview_windows(&ids, max_width, redact))).await
+    run_blocking(move || Ok(capture::preview_windows(&ids, max_width))).await
 }
 
 #[tauri::command]
@@ -310,13 +308,13 @@ pub async fn capture_displays(
     state: State<'_, AppState>,
     ids: Vec<u32>,
 ) -> Result<CapturePayload, String> {
-    let (max_width, redact) = with_settings_mut(&state, |settings| {
+    let max_width = with_settings_mut(&state, |settings| {
         settings.capture_mode = CaptureMode::All;
         settings.capture_display_ids = ids.clone();
-        (settings.downscale_max_width, settings.redact_passwords)
+        settings.downscale_max_width
     })?;
     run_blocking(move || {
-        crate::capture_flow::persist_captured(&app, capture::capture_ids(&ids, max_width, redact)?)
+        crate::capture_flow::persist_captured(&app, capture::capture_ids(&ids, max_width)?)
     })
     .await
 }

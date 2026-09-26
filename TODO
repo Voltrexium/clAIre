@@ -1,12 +1,11 @@
 chat persistence
 
-explanations 1/2 setence is a bit weird
+
+explanations 1/2 sentence is a bit weird
 
 for multi window make the visual appearance of windows to be different than text box
 
 Privacy Controls & Redaction:
-
-    Blur or mask sensitive on-screen regions (e.g., passwords, credit card inputs) before sending frames to vision APIs.
 
     Local image preprocessing or preview before sending.
 

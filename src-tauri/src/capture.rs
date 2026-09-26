@@ -5,7 +5,6 @@ use image::{imageops, RgbaImage};
 use serde::Serialize;
 use xcap::{Monitor, Window};
 
-use crate::redact::{self, Placement};
 use crate::state::{encode_png, Capture, WindowShot};
 
 #[derive(Debug, Clone, Serialize)]
@@ -229,35 +228,24 @@ pub fn target_for_id(id: u32) -> CurrentTarget {
     }
 }
 
-pub fn capture_primary(max_width: u32, redact: bool) -> Result<Capture, String> {
-    let (mut image, place) = capture_primary_monitor()?;
-    let mut blurred = false;
-    if redact {
-        let fields = redact::fields_in(&[place.region()]);
-        blurred = redact::cover(&mut image, place, &fields);
-    }
-    let mut capture = finish(image, &[screen_shot(true)], max_width)?;
-    capture.passwords_blurred = blurred;
-    Ok(capture)
+pub fn capture_primary(max_width: u32) -> Result<Capture, String> {
+    finish(capture_primary_monitor()?, &[screen_shot(true)], max_width)
 }
 
-pub fn capture_ids(ids: &[u32], max_width: u32, redact: bool) -> Result<Capture, String> {
-    let (mut tiles, errors) = grab_windows(ids);
+pub fn capture_ids(ids: &[u32], max_width: u32) -> Result<Capture, String> {
+    let (tiles, errors) = grab_windows(ids);
     if tiles.is_empty() {
         return Err(format!(
             "Could not capture selected windows ({})",
             errors.join("; ")
         ));
     }
-    let blurred = redact_tiles(&mut tiles, redact);
     let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.shot.clone()).collect();
-    let mut capture = finish(
+    finish(
         stitch_layout(tiles.into_iter().map(|tile| (0, 0, tile.image)).collect()),
         &shots,
         max_width,
-    )?;
-    capture.passwords_blurred = blurred.into_iter().any(|hit| hit);
-    Ok(capture)
+    )
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -268,18 +256,16 @@ pub struct WindowPreview {
     pub data_url: String,
     pub width: u32,
     pub height: u32,
-    pub passwords_blurred: bool,
 }
 
-/// Redacted per-window images for the picker. Does not replace the capture that gets sent.
-pub fn preview_windows(ids: &[u32], max_width: u32, redact: bool) -> Vec<WindowPreview> {
-    let (mut tiles, _) = grab_windows(ids);
+/// Per-window images for the picker. Does not replace the capture that gets sent.
+pub fn preview_windows(ids: &[u32], max_width: u32) -> Vec<WindowPreview> {
+    let (tiles, _) = grab_windows(ids);
     if tiles.is_empty() {
         return Vec::new();
     }
-    let blurred = redact_tiles(&mut tiles, redact);
     let mut out = Vec::new();
-    for (index, tile) in tiles.into_iter().enumerate() {
+    for tile in tiles {
         let image = downscale(tile.image, max_width);
         let width = image.width();
         let height = image.height();
@@ -292,7 +278,6 @@ pub fn preview_windows(ids: &[u32], max_width: u32, redact: bool) -> Vec<WindowP
             data_url: encoded.to_payload().data_url,
             width,
             height,
-            passwords_blurred: blurred[index],
         });
     }
     out
@@ -302,7 +287,6 @@ struct Grabbed {
     id: u32,
     shot: WindowShot,
     image: RgbaImage,
-    place: Placement,
 }
 
 fn unique_ids(ids: &[u32]) -> Vec<u32> {
@@ -327,28 +311,11 @@ fn grab_windows(ids: &[u32]) -> (Vec<Grabbed>, Vec<String>) {
     let mut errors = Vec::new();
     for id in unique {
         match capture_id(&windows, &monitors, &listed, id) {
-            Ok((shot, image, place)) => tiles.push(Grabbed {
-                id,
-                shot,
-                image,
-                place,
-            }),
+            Ok((shot, image)) => tiles.push(Grabbed { id, shot, image }),
             Err(err) => errors.push(err),
         }
     }
     (tiles, errors)
-}
-
-fn redact_tiles(tiles: &mut [Grabbed], redact: bool) -> Vec<bool> {
-    let mut blurred = vec![false; tiles.len()];
-    if redact {
-        let regions: Vec<_> = tiles.iter().map(|tile| tile.place.region()).collect();
-        let fields = redact::fields_in(&regions);
-        for (index, tile) in tiles.iter_mut().enumerate() {
-            blurred[index] = redact::cover(&mut tile.image, tile.place, &fields);
-        }
-    }
-    blurred
 }
 
 fn capture_id(
@@ -356,39 +323,24 @@ fn capture_id(
     monitors: &[Monitor],
     listed: &[DisplayInfo],
     id: u32,
-) -> Result<(WindowShot, RgbaImage, Placement), String> {
+) -> Result<(WindowShot, RgbaImage), String> {
     let listed = listed.iter().find(|item| item.id == id).cloned();
     let _listed_shot = || shot_from_listed(&listed, id);
 
     #[cfg(target_os = "linux")]
     if let Some((x, y, width, height)) = crate::linux_windows::extra_rect(id) {
-        if let Ok((image, place)) = capture_rect(x, y, width, height) {
-            return Ok((_listed_shot(), image, place));
+        if let Ok(image) = capture_rect(x, y, width, height) {
+            return Ok((_listed_shot(), image));
         }
     }
 
     #[cfg(target_os = "linux")]
     if let Ok(image) = linux_capture_window(id) {
-        let (x, y, width, height) = listed
-            .as_ref()
-            .filter(|info| info.width > 0 && info.height > 0)
-            .map(|info| (info.x, info.y, info.width, info.height))
-            .or_else(|| x11_frame(id))
-            .unwrap_or((0, 0, image.width(), image.height()));
-        let place = Placement::new(x, y, width, height, image.width(), image.height());
-        return Ok((_listed_shot(), image, place));
+        return Ok((_listed_shot(), image));
     }
 
     if let Some(window) = windows.iter().find(|window| window.id().ok() == Some(id)) {
         if let Ok(image) = window.capture_image() {
-            let place = Placement::new(
-                window.x().unwrap_or(0),
-                window.y().unwrap_or(0),
-                window.width().unwrap_or(image.width()),
-                window.height().unwrap_or(image.height()),
-                image.width(),
-                image.height(),
-            );
             return Ok((
                 WindowShot {
                     app: window.app_name().unwrap_or_default(),
@@ -397,14 +349,13 @@ fn capture_id(
                         || listed.as_ref().is_some_and(|item| item.current),
                 },
                 image,
-                place,
             ));
         }
     }
 
     if let Some(info) = listed.as_ref() {
-        if let Ok((image, place)) = capture_rect(info.x, info.y, info.width, info.height) {
-            return Ok((shot_from_info(info), image, place));
+        if let Ok(image) = capture_rect(info.x, info.y, info.width, info.height) {
+            return Ok((shot_from_info(info), image));
         }
     }
 
@@ -417,14 +368,6 @@ fn capture_id(
             .or_else(|_| monitor.name())
             .unwrap_or_else(|_| "Display".into());
         let image = monitor.capture_image().map_err(|err| err.to_string())?;
-        let place = Placement::new(
-            monitor.x().unwrap_or(0),
-            monitor.y().unwrap_or(0),
-            monitor.width().unwrap_or(image.width()),
-            monitor.height().unwrap_or(image.height()),
-            image.width(),
-            image.height(),
-        );
         return Ok((
             WindowShot {
                 app: "Screen".into(),
@@ -432,14 +375,13 @@ fn capture_id(
                 focused: monitor.is_primary().unwrap_or(false),
             },
             image,
-            place,
         ));
     }
 
     Err(format!("window {id} not found"))
 }
 
-fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<(RgbaImage, Placement), String> {
+fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<RgbaImage, String> {
     if width < 1 || height < 1 {
         return Err("Window has no size".into());
     }
@@ -469,16 +411,7 @@ fn capture_rect(x: i32, y: i32, width: u32, height: u32) -> Result<(RgbaImage, P
     let crop_y = (y - my).max(0) as u32;
     let crop_w = width.min(image.width().saturating_sub(crop_x)).max(1);
     let crop_h = height.min(image.height().saturating_sub(crop_y)).max(1);
-    let image = imageops::crop_imm(&image, crop_x, crop_y, crop_w, crop_h).to_image();
-    let place = Placement::new(
-        x.max(mx),
-        y.max(my),
-        image.width(),
-        image.height(),
-        image.width(),
-        image.height(),
-    );
-    Ok((image, place))
+    Ok(imageops::crop_imm(&image, crop_x, crop_y, crop_w, crop_h).to_image())
 }
 
 fn finish(image: RgbaImage, windows: &[WindowShot], max_width: u32) -> Result<Capture, String> {
@@ -666,23 +599,14 @@ fn monitor_label(monitor: &Monitor) -> String {
     format!("Screen — {name}")
 }
 
-fn capture_primary_monitor() -> Result<(RgbaImage, Placement), String> {
+fn capture_primary_monitor() -> Result<RgbaImage, String> {
     let monitors = Monitor::all().map_err(|err| err.to_string())?;
     let monitor = monitors
         .iter()
         .find(|monitor| monitor.is_primary().unwrap_or(false))
         .or_else(|| monitors.first())
         .ok_or_else(|| "No visible window found".to_string())?;
-    let image = monitor.capture_image().map_err(|err| err.to_string())?;
-    let place = Placement::new(
-        monitor.x().unwrap_or(0),
-        monitor.y().unwrap_or(0),
-        monitor.width().unwrap_or(image.width()),
-        monitor.height().unwrap_or(image.height()),
-        image.width(),
-        image.height(),
-    );
-    Ok((image, place))
+    monitor.capture_image().map_err(|err| err.to_string())
 }
 
 fn stitch_layout(tiles: Vec<(i32, i32, RgbaImage)>) -> RgbaImage {
@@ -830,39 +754,6 @@ fn linux_capture_window(id: u32) -> Result<RgbaImage, String> {
         dst[2] = src[b_off];
     }
     RgbaImage::from_raw(width, height, rgba).ok_or_else(|| "Could not decode window image".into())
-}
-
-#[cfg(target_os = "linux")]
-fn x11_frame(id: u32) -> Option<(i32, i32, u32, u32)> {
-    use xcb::x::{Drawable, GetGeometry, TranslateCoordinates, Window as XWindow};
-    use xcb::XidNew;
-
-    if id == 0 {
-        return None;
-    }
-    let x11 = x11().ok()?;
-    let window = XWindow::new(id);
-    let geometry = x11
-        .conn
-        .wait_for_reply(x11.conn.send_request(&GetGeometry {
-            drawable: Drawable::Window(window),
-        }))
-        .ok()?;
-    let translated = x11
-        .conn
-        .wait_for_reply(x11.conn.send_request(&TranslateCoordinates {
-            dst_window: geometry.root(),
-            src_window: window,
-            src_x: 0,
-            src_y: 0,
-        }))
-        .ok()?;
-    Some((
-        translated.dst_x() as i32,
-        translated.dst_y() as i32,
-        geometry.width() as u32,
-        geometry.height() as u32,
-    ))
 }
 
 #[cfg(target_os = "linux")]

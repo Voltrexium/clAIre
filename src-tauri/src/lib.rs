@@ -17,7 +17,6 @@ mod linux_a11y;
 #[cfg(target_os = "linux")]
 mod linux_windows;
 mod llm;
-mod redact;
 mod search;
 mod secrets;
 mod settings;

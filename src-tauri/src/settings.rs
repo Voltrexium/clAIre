@@ -156,13 +156,6 @@ pub struct Settings {
     pub search_usage: SearchUsage,
     pub history_limit: usize,
     pub downscale_max_width: u32,
-    /// Cover password controls reported by the OS before a screenshot is stored or sent.
-    #[serde(default = "default_true")]
-    pub redact_passwords: bool,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_tavily_limit() -> u32 {
@@ -201,7 +194,6 @@ impl Default for Settings {
             search_usage: SearchUsage::default(),
             history_limit: 6,
             downscale_max_width: 1280,
-            redact_passwords: true,
         }
     }
 }
