@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getSettings, openStorageFolder, saveSettings, storageInfo } from "../shared/api";
 import {
   ANTHROPIC_MODELS,
@@ -9,10 +9,11 @@ import {
   withCurrent,
 } from "../shared/models";
 import type { Provider, SearchProvider, Settings, StorageInfo } from "../shared/types";
-import { usageKeyId } from "../shared/usageKey";
+import { hashUsageKey, usageKeyId } from "../shared/usageKey";
 
 const EMPTY_USAGE = { tavily: {}, brave: {}, duckduckgo: {} };
 
+/** Placeholder until `getSettings` returns. The Rust `Settings::default` is what gets saved. */
 const DEFAULTS: Settings = {
   provider: "openai",
   openaiApiKey: "",
@@ -25,8 +26,7 @@ const DEFAULTS: Settings = {
   customBaseUrl: "",
   customApiKey: "",
   customModel: "",
-  systemPrompt:
-    "You are clAIre, a fast desktop context assistant. The user may attach a screenshot of their screen or active window. Use that visual context. Be concise unless asked for depth, but always add one or two sentences of context on why, what, or how the answer was reached. If web search results are provided, cite them briefly.",
+  systemPrompt: "",
   hotkey: "CommandOrControl+Shift+Space",
   captureMode: "current",
   captureDisplayIds: [],
@@ -66,11 +66,12 @@ function withSearchKey(
   provider: "tavily" | "brave",
   fallback: number,
   value: string,
+  keyId: string,
 ): Settings {
   return {
     ...current,
     [keyField]: value,
-    [limitField]: current.searchUsage[provider]?.[usageKeyId(value)]?.monthlyLimit ?? fallback,
+    [limitField]: current.searchUsage[provider]?.[keyId]?.monthlyLimit ?? fallback,
   };
 }
 
@@ -149,6 +150,8 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
+  const keyGen = useRef({ tavily: 0, brave: 0 });
   const patch = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     setSettings((current) => ({ ...current, [key]: value }));
 
@@ -156,8 +159,10 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
     void (async () => {
       try {
         const [loaded, storage] = await Promise.all([getSettings(), storageInfo()]);
-        setSettings({ ...DEFAULTS, ...loaded });
+        await Promise.all([hashUsageKey(loaded.tavilyApiKey), hashUsageKey(loaded.braveApiKey)]);
+        setSettings(loaded);
         setInfo(storage);
+        setReady(true);
       } catch (err) {
         setStatus(String(err));
       }
@@ -196,11 +201,13 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
             Back
           </button>
         )}
-        <button className="primary" type="button" disabled={busy} onClick={() => void onSave()}>
+        <button className="primary" type="button" disabled={busy || !ready} onClick={() => void onSave()}>
           Save
         </button>
       </div>
       {status && <div className="status">{status}</div>}
+      {!ready && <p className="hint">Loading settings…</p>}
+      {ready && <>
 
       <section>
         <h2>Assistant</h2>
@@ -311,11 +318,15 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
                 label="Tavily API key"
                 type="password"
                 value={settings.tavilyApiKey}
-                onChange={(v) =>
-                  setSettings((current) =>
-                    withSearchKey(current, "tavilyApiKey", "tavilyMonthlyLimit", "tavily", 1000, v),
-                  )
-                }
+                onChange={(v) => {
+                  const gen = ++keyGen.current.tavily;
+                  void hashUsageKey(v).then((id) => {
+                    if (gen !== keyGen.current.tavily) return;
+                    setSettings((current) =>
+                      withSearchKey(current, "tavilyApiKey", "tavilyMonthlyLimit", "tavily", 1000, v, id),
+                    );
+                  });
+                }}
               />
               <Text
                 label="Tavily monthly limit"
@@ -331,11 +342,15 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
                 label="Brave API key"
                 type="password"
                 value={settings.braveApiKey}
-                onChange={(v) =>
-                  setSettings((current) =>
-                    withSearchKey(current, "braveApiKey", "braveMonthlyLimit", "brave", 2000, v),
-                  )
-                }
+                onChange={(v) => {
+                  const gen = ++keyGen.current.brave;
+                  void hashUsageKey(v).then((id) => {
+                    if (gen !== keyGen.current.brave) return;
+                    setSettings((current) =>
+                      withSearchKey(current, "braveApiKey", "braveMonthlyLimit", "brave", 2000, v, id),
+                    );
+                  });
+                }}
               />
               <Text
                 label="Brave monthly limit"
@@ -404,6 +419,7 @@ export default function SettingsPage({ onClose }: { onClose?: () => void }) {
           Open storage folder
         </button>
       </section>
+      </>}
     </div>
   );
 }

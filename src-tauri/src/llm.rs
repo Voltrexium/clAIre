@@ -232,19 +232,12 @@ async fn stream_openai(
     user_text: &str,
     image_png: Option<&[u8]>,
 ) -> Result<String, String> {
-    let (base, key, model) = openai_endpoint(settings)?;
-    let mut req = client()
-        .post(format!("{base}/chat/completions"))
-        .json(&serde_json::json!({
-            "model": model,
-            "stream": true,
-            "messages": openai_style_messages(system, history, user_text, image_png),
-        }));
-    if !key.is_empty() {
-        req = req.bearer_auth(key);
-    }
-
-    let response = ensure_ok(req.send().await.map_err(|err| err.to_string())?, "LLM").await?;
+    let response = post_openai(
+        settings,
+        true,
+        openai_style_messages(system, history, user_text, image_png),
+    )
+    .await?;
     collect_sse(app, response, extract_openai_token).await
 }
 
@@ -276,20 +269,17 @@ async fn stream_anthropic(
     user_content.push(serde_json::json!({"type": "text", "text": user_text}));
     messages.push(serde_json::json!({"role": "user", "content": user_content}));
 
-    let response = client()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &settings.anthropic_api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&serde_json::json!({
+    let response = post_anthropic(
+        settings,
+        serde_json::json!({
             "model": settings.anthropic_model,
             "max_tokens": 2048,
             "stream": true,
             "system": system,
             "messages": messages,
-        }))
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
+        }),
+    )
+    .await?;
     let response = ensure_ok(response, "Anthropic").await?;
     collect_sse(app, response, |value| {
         if value.get("type").and_then(|v| v.as_str()) == Some("content_block_delta") {
@@ -312,7 +302,6 @@ async fn stream_ollama(
     user_text: &str,
     image_png: Option<&[u8]>,
 ) -> Result<String, String> {
-    let base = settings.ollama_base_url.trim_end_matches('/');
     if settings.ollama_model.is_empty() {
         return Err("Missing Ollama model".into());
     }
@@ -332,16 +321,15 @@ async fn stream_ollama(
     }
     messages.push(user);
 
-    let response = client()
-        .post(format!("{base}/api/chat"))
-        .json(&serde_json::json!({
+    let response = post_ollama(
+        settings,
+        serde_json::json!({
             "model": settings.ollama_model,
             "stream": true,
             "messages": messages,
-        }))
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
+        }),
+    )
+    .await?;
     collect_ndjson(app, ensure_ok(response, "Ollama").await?).await
 }
 
@@ -363,7 +351,7 @@ fn openai_endpoint(settings: &Settings) -> Result<(String, String, String), Stri
     } else {
         let mut base = settings.custom_base_url.trim_end_matches('/').to_string();
         if base.is_empty() {
-            base = default_compat_base(settings.provider).to_string();
+            base = crate::settings::compat_base(settings.provider).to_string();
         }
         (
             base,
@@ -383,41 +371,71 @@ fn openai_endpoint(settings: &Settings) -> Result<(String, String, String), Stri
     Ok((base, key, model))
 }
 
-fn default_compat_base(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Gemini => "https://generativelanguage.googleapis.com/v1beta/openai",
-        Provider::Groq => "https://api.groq.com/openai/v1",
-        Provider::Openrouter => "https://openrouter.ai/api/v1",
-        Provider::Mistral => "https://api.mistral.ai/v1",
-        Provider::Deepseek => "https://api.deepseek.com/v1",
-        Provider::Xai => "https://api.x.ai/v1",
-        Provider::Together => "https://api.together.xyz/v1",
-        Provider::Fireworks => "https://api.fireworks.ai/inference/v1",
-        _ => "",
-    }
-}
-
-async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
+async fn post_openai(
+    settings: &Settings,
+    stream: bool,
+    messages: Vec<serde_json::Value>,
+) -> Result<reqwest::Response, String> {
     let (base, key, model) = openai_endpoint(settings)?;
     let mut req = client()
         .post(format!("{base}/chat/completions"))
         .json(&serde_json::json!({
             "model": model,
-            "stream": false,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "stream": stream,
+            "messages": messages,
         }));
     if !key.is_empty() {
         req = req.bearer_auth(key);
     }
-    let response = req.send().await.map_err(|err| err.to_string())?;
-    let body = ensure_ok(response, "LLM")
-        .await?
-        .text()
+    ensure_ok(req.send().await.map_err(|err| err.to_string())?, "LLM").await
+}
+
+async fn post_anthropic(
+    settings: &Settings,
+    body: serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    if settings.anthropic_api_key.is_empty() {
+        return Err("Missing Anthropic API key".into());
+    }
+    client()
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", &settings.anthropic_api_key)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
         .await
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| err.to_string())
+}
+
+async fn post_ollama(
+    settings: &Settings,
+    body: serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    let base = settings.ollama_base_url.trim_end_matches('/');
+    if settings.ollama_model.is_empty() {
+        return Err("Missing Ollama model".into());
+    }
+    client()
+        .post(format!("{base}/api/chat"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
+    let body = post_openai(
+        settings,
+        false,
+        vec![
+            serde_json::json!({"role": "system", "content": system}),
+            serde_json::json!({"role": "user", "content": user}),
+        ],
+    )
+    .await?
+    .text()
+    .await
+    .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     value
         .pointer("/choices/0/message/content")
@@ -426,28 +444,24 @@ async fn plain_openai(settings: &Settings, system: &str, user: &str) -> Result<S
 }
 
 async fn plain_anthropic(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
-    if settings.anthropic_api_key.is_empty() {
-        return Err("Missing Anthropic API key".into());
-    }
-    let response = client()
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &settings.anthropic_api_key)
-        .header("anthropic-version", "2023-06-01")
-        .json(&serde_json::json!({
-            "model": settings.anthropic_model,
-            "max_tokens": 1024,
-            "stream": false,
-            "system": system,
-            "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
-        }))
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let body = ensure_ok(response, "Anthropic")
-        .await?
-        .text()
-        .await
-        .map_err(|err| err.to_string())?;
+    let body = ensure_ok(
+        post_anthropic(
+            settings,
+            serde_json::json!({
+                "model": settings.anthropic_model,
+                "max_tokens": 1024,
+                "stream": false,
+                "system": system,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": user}]}],
+            }),
+        )
+        .await?,
+        "Anthropic",
+    )
+    .await?
+    .text()
+    .await
+    .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     let mut text = String::new();
     if let Some(blocks) = value.get("content").and_then(|v| v.as_array()) {
@@ -466,28 +480,25 @@ async fn plain_anthropic(settings: &Settings, system: &str, user: &str) -> Resul
 }
 
 async fn plain_ollama(settings: &Settings, system: &str, user: &str) -> Result<String, String> {
-    let base = settings.ollama_base_url.trim_end_matches('/');
-    if settings.ollama_model.is_empty() {
-        return Err("Missing Ollama model".into());
-    }
-    let response = client()
-        .post(format!("{base}/api/chat"))
-        .json(&serde_json::json!({
-            "model": settings.ollama_model,
-            "stream": false,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        }))
-        .send()
-        .await
-        .map_err(|err| err.to_string())?;
-    let body = ensure_ok(response, "Ollama")
-        .await?
-        .text()
-        .await
-        .map_err(|err| err.to_string())?;
+    let body = ensure_ok(
+        post_ollama(
+            settings,
+            serde_json::json!({
+                "model": settings.ollama_model,
+                "stream": false,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            }),
+        )
+        .await?,
+        "Ollama",
+    )
+    .await?
+    .text()
+    .await
+    .map_err(|err| err.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&body).map_err(|err| err.to_string())?;
     let text = value
         .pointer("/message/content")

@@ -1,5 +1,6 @@
-/** Hardcoded provider model lists (updated Sep 2026). */
+/** Hardcoded provider model lists (updated Sep 2026). Base URLs live in providerBases.json so the Rust client uses the same hosts. */
 import type { Provider } from "./types";
+import bases from "./providerBases.json";
 
 export const OPENAI_MODELS = [
   "gpt-5.4",
@@ -123,42 +124,42 @@ export const PROVIDER_PRESETS: Partial<
   Record<Provider, { base: string; models: string[]; defaultModel: string }>
 > = {
   gemini: {
-    base: "https://generativelanguage.googleapis.com/v1beta/openai",
+    base: bases.gemini,
     models: GEMINI_MODELS,
     defaultModel: "gemini-2.5-flash",
   },
   groq: {
-    base: "https://api.groq.com/openai/v1",
+    base: bases.groq,
     models: GROQ_MODELS,
     defaultModel: "llama-3.3-70b-versatile",
   },
   openrouter: {
-    base: "https://openrouter.ai/api/v1",
+    base: bases.openrouter,
     models: OPENROUTER_MODELS,
     defaultModel: "openai/gpt-4o",
   },
   mistral: {
-    base: "https://api.mistral.ai/v1",
+    base: bases.mistral,
     models: MISTRAL_MODELS,
     defaultModel: "mistral-small-latest",
   },
   deepseek: {
-    base: "https://api.deepseek.com/v1",
+    base: bases.deepseek,
     models: DEEPSEEK_MODELS,
     defaultModel: "deepseek-chat",
   },
   xai: {
-    base: "https://api.x.ai/v1",
+    base: bases.xai,
     models: XAI_MODELS,
     defaultModel: "grok-3-mini",
   },
   together: {
-    base: "https://api.together.xyz/v1",
+    base: bases.together,
     models: TOGETHER_MODELS,
     defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
   },
   fireworks: {
-    base: "https://api.fireworks.ai/inference/v1",
+    base: bases.fireworks,
     models: FIREWORKS_MODELS,
     defaultModel: "accounts/fireworks/models/llama-v3p3-70b-instruct",
   },

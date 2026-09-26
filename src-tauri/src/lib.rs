@@ -9,8 +9,11 @@
 )]
 
 mod capture;
+mod capture_flow;
 mod commands;
 mod hotkey;
+#[cfg(target_os = "linux")]
+mod linux_a11y;
 #[cfg(target_os = "linux")]
 mod linux_windows;
 mod llm;

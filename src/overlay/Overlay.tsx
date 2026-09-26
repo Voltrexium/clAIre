@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -15,8 +15,8 @@ import {
   recapture,
   setCaptureMode as persistCaptureMode,
   setWindowMode,
-  fitOverlay,
 } from "../shared/api";
+import { followAnswer, pinTurn, useOverlayFit } from "./useOverlayFit";
 import DisplayPicker, { importantWindows, quarterSize } from "../shared/DisplayPicker";
 import SettingsPage from "../settings/Settings";
 import { renderLiteMarkdown } from "../shared/markdown";
@@ -55,23 +55,15 @@ type LogEntry = {
 
 const EMPTY_SOURCES: SearchSource[] = [];
 
-function pinTurn(scroller: HTMLElement, turn: HTMLElement) {
-  const sRect = scroller.getBoundingClientRect();
-  const qRect = turn.getBoundingClientRect();
-  const cap = Math.max(88, scroller.clientHeight * 0.3);
-  if (qRect.height <= cap) {
-    scroller.scrollTop += qRect.top - sRect.top;
-  } else {
-    scroller.scrollTop += qRect.bottom - cap - sRect.top;
-  }
-}
-
-function followAnswer(scroller: HTMLElement, answer: HTMLElement) {
-  const sRect = scroller.getBoundingClientRect();
-  const aRect = answer.getBoundingClientRect();
-  if (aRect.bottom > sRect.bottom - 8) {
-    scroller.scrollTop += aRect.bottom - (sRect.bottom - 8);
-  }
+function useMirrored<T>(initial: T) {
+  const [value, setValue] = useState(initial);
+  const ref = useRef(initial);
+  const set = useCallback((action: SetStateAction<T>) => {
+    const next = typeof action === "function" ? (action as (value: T) => T)(ref.current) : action;
+    ref.current = next;
+    setValue(next);
+  }, []);
+  return [value, set, ref] as const;
 }
 
 function setFenceCopied(button: HTMLElement, copied: boolean) {
@@ -141,12 +133,7 @@ function shotPopLayout(anchor: ShotAnchor) {
   return { box, maxW, maxH };
 }
 
-type ChatTurnProps = {
-  entry: LogEntry;
-  index: number;
-  isLastAssistant: boolean;
-  isFirstUser: boolean;
-  isLatestUser: boolean;
+type TurnChrome = {
   clampQuery: boolean;
   queryCap: number;
   queryExpanded: boolean;
@@ -158,6 +145,15 @@ type ChatTurnProps = {
   usedSearch: boolean;
   usedSearchApi: string;
   searchSources: SearchSource[];
+};
+
+type ChatTurnProps = {
+  entry: LogEntry;
+  index: number;
+  isLastAssistant: boolean;
+  isFirstUser: boolean;
+  isLatestUser: boolean;
+  chrome?: TurnChrome;
   latestUserRef: React.MutableRefObject<HTMLElement | null>;
   latestAssistantRef: React.MutableRefObject<HTMLElement | null>;
   onOpenPreview: (src: string, alt: string) => void;
@@ -174,17 +170,7 @@ const ChatTurn = memo(function ChatTurn({
   isLastAssistant,
   isFirstUser,
   isLatestUser,
-  clampQuery,
-  queryCap,
-  queryExpanded,
-  showClamp,
-  copied,
-  busy,
-  askStatus,
-  usedVision,
-  usedSearch,
-  usedSearchApi,
-  searchSources,
+  chrome,
   latestUserRef,
   latestAssistantRef,
   onOpenPreview,
@@ -194,6 +180,19 @@ const ChatTurn = memo(function ChatTurn({
   onCopyOutput,
   onAnswerClick,
 }: ChatTurnProps) {
+  const {
+    clampQuery = false,
+    queryCap = 0,
+    queryExpanded = false,
+    showClamp = false,
+    copied = false,
+    busy = false,
+    askStatus = null,
+    usedVision = false,
+    usedSearch = false,
+    usedSearchApi = "",
+    searchSources = EMPTY_SOURCES,
+  } = chrome ?? {};
   const html = useMemo(() => (entry.content ? renderLiteMarkdown(entry.content) : ""), [entry.content]);
   return (
     <article
@@ -313,12 +312,11 @@ export default function Overlay() {
   const [searchSources, setSearchSources] = useState<SearchSource[]>([]);
   const [usedVision, setUsedVision] = useState(false);
   const [askStatus, setAskStatus] = useState<AskStatus | null>(null);
-  const [captureMode, setCaptureMode] = useState<CaptureMode>("current");
+  const [captureMode, setCaptureMode, captureModeRef] = useMirrored<CaptureMode>("current");
   const [displays, setDisplays] = useState<DisplayInfo[]>([]);
   const [previews, setPreviews] = useState<Record<number, WindowPreview>>({});
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [showSettings, setShowSettings] = useState(false);
-  const showSettingsRef = useRef(false);
+  const [selectedIds, setSelectedIds, selectedIdsRef] = useMirrored<number[]>([]);
+  const [showSettings, setShowSettings, showSettingsRef] = useMirrored(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const captureGen = useRef(0);
@@ -328,20 +326,17 @@ export default function Overlay() {
   const [capturing, setCapturing] = useState(false);
   const [windowLabel, setWindowLabel] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
-  const [passwordNotice, setPasswordNotice] = useState(false);
-  const passwordNoticeRef = useRef(false);
-  const [preview, setPreview] = useState<{ src: string; alt: string } | null>(null);
-  const previewRef = useRef<{ src: string; alt: string } | null>(null);
-  const [shotPop, setShotPop] = useState<ShotPop | null>(null);
-  const shotPopRef = useRef<ShotPop | null>(null);
+  const [passwordNotice, setPasswordNotice, passwordNoticeRef] = useMirrored(false);
+  const [preview, setPreview, previewRef] = useMirrored<{ src: string; alt: string } | null>(null);
+  const [shotPop, setShotPop, shotPopRef] = useMirrored<ShotPop | null>(null);
   const debounceRef = useRef(0);
-  const selectedIdsRef = useRef<number[]>([]);
-  const captureModeRef = useRef<CaptureMode>("current");
   const captureRef = useRef<CapturePayload | null>(null);
   const pinWindowIdRef = useRef<number | null>(null);
   const lastCurrentIdRef = useRef<number | null>(null);
   const [lastCurrentId, setLastCurrentId] = useState<number | null>(null);
   const [singleTargetId, setSingleTargetId] = useState<number | null>(null);
+  const singleTargetIdRef = useRef<number | null>(null);
+  const [thumbStale, setThumbStale] = useState(false);
   const [tileOrder, setTileOrder] = useState<number[]>([]);
   const [previewsPending, setPreviewsPending] = useState(false);
   const previewGen = useRef(0);
@@ -353,8 +348,7 @@ export default function Overlay() {
   const chatLogRef = useRef<HTMLElement | null>(null);
   const scrollerWrapRef = useRef<HTMLDivElement>(null);
   const windowListBusy = useRef(false);
-  const overlayFocusedRef = useRef(false);
-  const [overlayFocused, setOverlayFocused] = useState(false);
+  const [overlayFocused, setOverlayFocused] = useMirrored(false);
   const previewBusy = useRef(false);
   const tokenBuf = useRef("");
   const tokenTimer = useRef(0);
@@ -372,15 +366,13 @@ export default function Overlay() {
   const expanded = showSettings || log.length > 0 || stayOpen;
 
   const closeSettings = useCallback(() => {
-    showSettingsRef.current = false;
     setShowSettings(false);
-  }, []);
+  }, [setShowSettings]);
 
   const openSettingsView = useCallback(() => {
-    showSettingsRef.current = true;
     setStayOpen(true);
     setShowSettings(true);
-  }, []);
+  }, [setShowSettings]);
 
   const focusInput = useCallback(() => {
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -464,8 +456,6 @@ export default function Overlay() {
         setCapture(latest);
         setWindowLabel(usableLabel(latest?.mode));
         setCaptureMode("current");
-        captureModeRef.current = "current";
-        selectedIdsRef.current = [];
         setSelectedIds([]);
         pinWindowIdRef.current = null;
         void persistCaptureMode("current", []);
@@ -488,6 +478,7 @@ export default function Overlay() {
         captureStale.current = false;
         captureRef.current = payload;
         setCapture(payload);
+        setThumbStale(false);
         setWindowLabel(usableLabel(payload.mode));
         setError(null);
         finishCaptureWait();
@@ -525,6 +516,7 @@ export default function Overlay() {
         captureStale.current = true;
         captureRef.current = null;
         setCapture(null);
+        setThumbStale(false);
         setWindowLabel("");
         resetAsk();
         setPreview(null);
@@ -539,8 +531,6 @@ export default function Overlay() {
         resetAsk();
         setPreview(null);
         setCaptureMode("current");
-        captureModeRef.current = "current";
-        selectedIdsRef.current = [];
         setSelectedIds([]);
         pinWindowIdRef.current = null;
         setStayOpen(false);
@@ -550,9 +540,19 @@ export default function Overlay() {
         beginCaptureWait();
         focusInput();
       });
-      await add<{ label?: string; recapturing?: boolean }>("claire://target", (hint) => {
+      await add<{ id?: number | null; label?: string; recapturing?: boolean }>("claire://target", (hint) => {
         if (captureModeRef.current !== "current") return;
         if (hint.label) setWindowLabel(hint.label);
+        if (typeof hint.id === "number") {
+          const prev = singleTargetIdRef.current;
+          const changed = prev !== hint.id;
+          singleTargetIdRef.current = hint.id;
+          setSingleTargetId(hint.id);
+          if (changed && (prev != null || hint.recapturing)) {
+            captureGen.current += 1;
+            setThumbStale(true);
+          }
+        }
         captureStale.current = true;
         if (hint.recapturing) beginCaptureWait();
       });
@@ -562,12 +562,10 @@ export default function Overlay() {
       if (event.key === "Escape") {
         event.preventDefault();
         if (previewRef.current) {
-          previewRef.current = null;
           setPreview(null);
           return;
         }
         if (shotPopRef.current) {
-          shotPopRef.current = null;
           setShotPop(null);
           return;
         }
@@ -577,7 +575,6 @@ export default function Overlay() {
           return;
         }
         if (passwordNoticeRef.current) {
-          passwordNoticeRef.current = false;
           setPasswordNotice(false);
           focusInput();
           return;
@@ -597,10 +594,9 @@ export default function Overlay() {
       window.clearTimeout(copiedTimer.current);
       window.clearTimeout(copiedSnippetTimer.current);
     };
-  }, [beginCaptureWait, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, resetAsk]);
+  }, [beginCaptureWait, captureModeRef, closeSettings, dropTokens, finishCaptureWait, focusInput, openSettingsView, passwordNoticeRef, previewRef, resetAsk, setCaptureMode, setPasswordNotice, setPreview, setSelectedIds, setShotPop, shotPopRef, showSettingsRef]);
 
   function closePreview() {
-    previewRef.current = null;
     setPreview(null);
   }
 
@@ -613,7 +609,6 @@ export default function Overlay() {
         const alive = new Set(next.map((display) => display.id));
         const ids = selectedIdsRef.current.filter((id) => alive.has(id));
         if (ids.length !== selectedIdsRef.current.length) {
-          selectedIdsRef.current = ids;
           setSelectedIds(ids);
           if (captureModeRef.current === "all") {
             void persistCaptureMode("all", ids);
@@ -629,13 +624,12 @@ export default function Overlay() {
       .finally(() => {
         windowListBusy.current = false;
       });
-  }, []);
+  }, [captureModeRef, selectedIdsRef, setSelectedIds]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     const apply = (focused: boolean) => {
-      overlayFocusedRef.current = focused;
       setOverlayFocused(focused);
     };
     void getCurrentWindow()
@@ -655,10 +649,10 @@ export default function Overlay() {
       cancelled = true;
       unlisten?.();
     };
-  }, []);
+  }, [setOverlayFocused]);
 
   useEffect(() => {
-    if (showSettings) return;
+    if (showSettings || captureMode === "none") return;
     let cancelled = false;
     const tick = () => {
       void (async () => {
@@ -676,21 +670,22 @@ export default function Overlay() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [showSettings, refreshWindowList]);
+  }, [showSettings, captureMode, refreshWindowList]);
 
   function setMode(next: CaptureMode) {
     if (next === captureModeRef.current) {
       if (next === "all") refreshWindowList();
       return;
     }
-    captureModeRef.current = next;
     setCaptureMode(next);
     window.clearTimeout(debounceRef.current);
     if (next === "none") {
       captureGen.current += 1;
-      selectedIdsRef.current = [];
       setSelectedIds([]);
       pinWindowIdRef.current = null;
+      singleTargetIdRef.current = null;
+      setSingleTargetId(null);
+      setThumbStale(false);
       captureStale.current = false;
       captureRef.current = null;
       setCapture(null);
@@ -704,13 +699,14 @@ export default function Overlay() {
       const specific = picked.length === 1 ? picked[0] : null;
       const targetId = specific ?? lastCurrentIdRef.current;
       if (specific != null) pinWindowIdRef.current = specific;
+      singleTargetIdRef.current = targetId;
       setSingleTargetId(targetId);
+      setThumbStale(false);
       const previewReady = targetId != null && !!previews[targetId]?.dataUrl;
       const kept =
         specific == null &&
         !!captureRef.current?.dataUrl &&
         captureRef.current.mode !== "selected windows";
-      selectedIdsRef.current = [];
       setSelectedIds([]);
       if (!kept) {
         captureStale.current = !previewReady;
@@ -735,138 +731,24 @@ export default function Overlay() {
     refreshWindowList();
   }
 
-  useLayoutEffect(() => {
-    const el = cardRef.current;
-    if (!el) return;
-    let lastH = 0;
-    let fitted = false;
-    let cancelled = false;
-    let raf = 0;
-    const positions = new Map<Element, { top: number; left: number }>();
-    const remember = (node: EventTarget | null) => {
-      if (!(node instanceof HTMLElement) || node === el) return;
-      positions.set(node, { top: node.scrollTop, left: node.scrollLeft });
-    };
-    const onScroll = (event: Event) => remember(event.target);
-    el.addEventListener("scroll", onScroll, true);
-
-    const pinLatestQuery = () => {
-      const scroller = chatLogRef.current;
-      const turn = latestUserRef.current;
-      if (!scroller || !turn) return;
-      pinTurn(scroller, turn);
-    };
-
-    const followLatest = () => {
-      const scroller = chatLogRef.current;
-      const answer = latestAssistantRef.current;
-      if (!scroller || !answer) return;
-      followAnswer(scroller, answer);
-    };
-
-    const restore = () => {
-      positions.forEach(({ top, left }, node) => {
-        if (!(node instanceof HTMLElement) || !node.isConnected) {
-          positions.delete(node);
-          return;
-        }
-        node.scrollTop = top;
-        node.scrollLeft = left;
-      });
-      ignoreScrollRef.current = true;
-      if (pinQueryRef.current) pinLatestQuery();
-      else if (followRef.current) followLatest();
-      requestAnimationFrame(() => {
-        ignoreScrollRef.current = false;
-      });
-    };
-
-    const sectionHeight = (kid: HTMLElement) => {
-      if (!kid.classList.contains("overlay-body")) return kid.offsetHeight;
-      const cs = getComputedStyle(kid);
-      const gap = parseFloat(cs.rowGap || cs.gap) || 0;
-      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      const kids = Array.from(kid.children) as HTMLElement[];
-      let height = pad;
-      kids.forEach((child, index) => {
-        const log =
-          child.classList.contains("chat-log")
-            ? child
-            : (child.querySelector(".chat-log") as HTMLElement | null);
-        if (log) {
-          height += Math.max(0, child.offsetHeight - log.offsetHeight) + Math.max(log.scrollHeight, log.offsetHeight);
-        } else {
-          height += child.offsetHeight;
-        }
-        if (index < kids.length - 1) height += gap;
-      });
-      return height;
-    };
-
-    const naturalHeight = () => {
-      const cs = getComputedStyle(el);
-      const gap = parseFloat(cs.rowGap || cs.gap) || 0;
-      const pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
-      const kids = Array.from(el.children) as HTMLElement[];
-      let height = pad;
-      kids.forEach((kid, index) => {
-        const kcs = getComputedStyle(kid);
-        height += (parseFloat(kcs.marginTop) || 0) + (parseFloat(kcs.marginBottom) || 0);
-        height += sectionHeight(kid);
-        if (index < kids.length - 1) height += gap;
-      });
-      return Math.ceil(height);
-    };
-
-    const apply = () => {
-      if (cancelled) return;
-      const height = Math.min(Math.max(naturalHeight(), 140), 800);
-      if (el.style.height !== `${height}px`) el.style.height = `${height}px`;
-      const sameHeight = Math.abs(height - lastH) < 1;
-      lastH = height;
-      if (sameHeight && fitted) return;
-      fitted = false;
-      void fitOverlay(880, height)
-        .then(() => {
-          fitted = true;
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          restore();
-          requestAnimationFrame(restore);
-        });
-    };
-    const schedule = () => {
-      if (cancelled || raf) return;
-      raf = window.requestAnimationFrame(() => {
-        raf = 0;
-        apply();
-      });
-    };
-    applyFitRef.current = schedule;
-    const observer = new ResizeObserver(() => schedule());
-    observer.observe(el);
-    el.querySelectorAll(
-      ".titlebar, .overlay-body, .overlay-body > *, .chat-log, .composer-block, .meta, .window-picker-wrap, .window-tiles",
-    ).forEach((node) => {
-      observer.observe(node);
-    });
-    schedule();
-    const retry = window.setTimeout(schedule, 50);
-    return () => {
-      cancelled = true;
-      applyFitRef.current = () => {};
-      observer.disconnect();
-      window.clearTimeout(retry);
-      window.cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", onScroll, true);
-      if (!el.classList.contains("has-thread")) el.style.height = "";
-    };
-  }, [expanded, showSettings, captureMode]);
-
-  useLayoutEffect(() => {
-    applyFitRef.current();
-  }, [displays.length, selectedIds.length, capturing, log, queryNeedsClamp, queryExpanded]);
+  useOverlayFit({
+    cardRef,
+    chatLogRef,
+    latestUserRef,
+    latestAssistantRef,
+    pinQueryRef,
+    followRef,
+    ignoreScrollRef,
+    applyFitRef,
+    expanded,
+    showSettings,
+    captureMode,
+    displaysLength: displays.length,
+    selectedCount: selectedIds.length,
+    capturing,
+    queryNeedsClamp,
+    queryExpanded,
+  });
 
   const continuing = log.length > 0;
   const firstUserIndex = log.findIndex((item) => item.role === "user");
@@ -958,7 +840,6 @@ export default function Overlay() {
 
   function onChatScroll() {
     if (shotPopRef.current) {
-      shotPopRef.current = null;
       setShotPop(null);
     }
     if (ignoreScrollRef.current) {
@@ -1013,24 +894,18 @@ export default function Overlay() {
   }, []);
 
   const openPreview = useCallback((src: string, alt: string) => {
-    const next = { src, alt };
-    previewRef.current = next;
-    setPreview(next);
-    shotPopRef.current = null;
+    setPreview({ src, alt });
     setShotPop(null);
-  }, []);
+  }, [setPreview, setShotPop]);
 
   const showShotPop = useCallback((live: boolean, src: string, alt: string, el: HTMLElement) => {
-    const next = { live, src, alt, anchor: anchorOf(el) };
-    shotPopRef.current = next;
-    setShotPop(next);
-  }, []);
+    setShotPop({ live, src, alt, anchor: anchorOf(el) });
+  }, [setShotPop]);
 
   const hideShotPop = useCallback(() => {
     if (!shotPopRef.current) return;
-    shotPopRef.current = null;
     setShotPop(null);
-  }, []);
+  }, [setShotPop, shotPopRef]);
 
   const toggleQueryExpanded = useCallback(() => {
     setQueryExpanded((open) => !open);
@@ -1067,7 +942,6 @@ export default function Overlay() {
       }
       const attached = captureModeRef.current === "none" ? null : captureRef.current;
       if (attached?.dataUrl && attached.passwordsBlurred) {
-        passwordNoticeRef.current = true;
         setPasswordNotice(true);
       }
       if (attached?.dataUrl) {
@@ -1173,6 +1047,7 @@ export default function Overlay() {
         captureStale.current = false;
         captureRef.current = payload;
         setCapture(payload);
+        setThumbStale(false);
         setWindowLabel(usableLabel(payload.mode));
         setError(null);
       } catch (err) {
@@ -1181,7 +1056,7 @@ export default function Overlay() {
         if (gen === captureGen.current) finishCaptureWait();
       }
     },
-    [beginCaptureWait, finishCaptureWait],
+    [beginCaptureWait, captureModeRef, finishCaptureWait, selectedIdsRef],
   );
 
   useEffect(() => {
@@ -1191,37 +1066,36 @@ export default function Overlay() {
       void refreshCapture();
     }, 200);
     return () => window.clearTimeout(timer);
-  }, [overlayFocused, showSettings, refreshCapture]);
+  }, [captureModeRef, overlayFocused, showSettings, refreshCapture]);
 
-  useEffect(() => {
-    if (captureMode !== "all") return;
-    setTileOrder((order) => {
-      if (displays.length === 0) return order;
-      if (order.length === 0) return importantWindows(displays).map((item) => item.id);
-      const alive = new Set(displays.map((item) => item.id));
-      const kept = order.filter((id) => alive.has(id));
-      if (kept.length === order.length) return order;
-      return kept;
-    });
-  }, [captureMode, displays]);
+  const resolvedTileOrder = useMemo(() => {
+    if (captureMode !== "all" || displays.length === 0) return tileOrder;
+    if (tileOrder.length === 0) return importantWindows(displays).map((item) => item.id);
+    const alive = new Set(displays.map((item) => item.id));
+    const kept = tileOrder.filter((id) => alive.has(id));
+    return kept.length === tileOrder.length ? tileOrder : kept;
+  }, [captureMode, displays, tileOrder]);
 
   const shownDisplays = useMemo(() => {
     if (captureMode !== "all") return [];
     const byId = new Map(displays.map((item) => [item.id, item]));
-    const locked = tileOrder
+    const locked = resolvedTileOrder
       .map((id) => byId.get(id))
       .filter((item): item is DisplayInfo => item != null);
     if (locked.length > 0) return locked;
     return importantWindows(displays);
-  }, [captureMode, displays, tileOrder]);
+  }, [captureMode, displays, resolvedTileOrder]);
   const shownKey = shownDisplays.map((item) => item.id).join(",");
   const previewKey = useMemo(() => {
     const ids =
-      captureMode === "all" && tileOrder.length > 0
-        ? tileOrder
+      captureMode === "all" && resolvedTileOrder.length > 0
+        ? [...resolvedTileOrder]
         : importantWindows(displays).map((item) => item.id);
+    if (captureMode === "current" && singleTargetId != null && !ids.includes(singleTargetId)) {
+      ids.push(singleTargetId);
+    }
     return [...ids].sort((a, b) => a - b).join(",");
-  }, [captureMode, tileOrder, displays]);
+  }, [captureMode, resolvedTileOrder, displays, singleTargetId]);
   useEffect(() => {
     const current = displays.find((item) => item.current);
     if (!current && lastCurrentIdRef.current != null) return;
@@ -1234,8 +1108,48 @@ export default function Overlay() {
   const currentPreview = useMemo(() => {
     const focusedId = displays.find((item) => item.current)?.id ?? null;
     const id = singleTargetId ?? focusedId ?? lastCurrentId;
-    return id != null ? previews[id] : undefined;
+    if (id == null) return undefined;
+    const exact = previews[id];
+    if (exact?.dataUrl) return exact;
+    const app = displays.find((item) => item.id === id)?.app?.trim().toLowerCase();
+    if (!app) return undefined;
+    const sibling = displays.find(
+      (item) => item.id !== id && item.app?.trim().toLowerCase() === app && previews[item.id]?.dataUrl,
+    );
+    return sibling ? previews[sibling.id] : undefined;
   }, [singleTargetId, displays, previews, lastCurrentId]);
+  const singleThumb = useMemo(() => {
+    const preview = currentPreview?.dataUrl ? currentPreview : null;
+    if (thumbStale) {
+      if (!preview) return null;
+      return {
+        src: preview.dataUrl,
+        alt: preview.name || windowLabel || "Current window",
+        width: preview.width,
+        height: preview.height,
+        live: false,
+      };
+    }
+    if (capture?.dataUrl) {
+      return {
+        src: capture.dataUrl,
+        alt: windowLabel || "Current window",
+        width: capture.width,
+        height: capture.height,
+        live: true,
+      };
+    }
+    if (preview) {
+      return {
+        src: preview.dataUrl,
+        alt: preview.name || windowLabel || "Current window",
+        width: preview.width,
+        height: preview.height,
+        live: false,
+      };
+    }
+    return null;
+  }, [capture, currentPreview, thumbStale, windowLabel]);
 
   useEffect(() => {
     if (captureMode !== "all" || !shownKey) return;
@@ -1243,20 +1157,19 @@ export default function Overlay() {
     const current = selectedIdsRef.current;
     const next = current.filter((id) => allowed.has(id));
     if (next.length === current.length) return;
-    selectedIdsRef.current = next;
     setSelectedIds(next);
     captureStale.current = true;
     void persistCaptureMode("all", next);
     void refreshCapture();
-  }, [captureMode, shownKey, refreshCapture]);
+  }, [captureMode, refreshCapture, selectedIdsRef, setSelectedIds, shownKey]);
 
   useEffect(() => {
-    if (showSettings || !overlayFocused || !previewKey) return;
+    if (showSettings || !previewKey) return;
     let cancelled = false;
     let wait = 0;
     const ids = previewKey.split(",").map(Number);
     const load = () => {
-      if (cancelled || !overlayFocusedRef.current) return;
+      if (cancelled) return;
       if (previewBusy.current) {
         window.clearTimeout(wait);
         wait = window.setTimeout(load, 200);
@@ -1268,7 +1181,7 @@ export default function Overlay() {
       setPreviewsPending(true);
       void previewWindows(ids)
         .then((rows) => {
-          if (cancelled || !overlayFocusedRef.current) return;
+          if (cancelled) return;
           setPreviews((prev) => {
             const next = { ...prev };
             for (const row of rows) next[row.id] = row;
@@ -1286,7 +1199,7 @@ export default function Overlay() {
       cancelled = true;
       window.clearTimeout(wait);
     };
-  }, [showSettings, overlayFocused, previewKey]);
+  }, [showSettings, previewKey]);
 
   function onToggleScreen(id: number) {
     const ids = selectedIdsRef.current;
@@ -1296,9 +1209,7 @@ export default function Overlay() {
     else if (pinWindowIdRef.current === id) {
       pinWindowIdRef.current = next.length === 1 ? next[0] : null;
     }
-    selectedIdsRef.current = next;
     setSelectedIds(next);
-    captureModeRef.current = "all";
     setCaptureMode("all");
     captureStale.current = true;
     void persistCaptureMode("all", next);
@@ -1327,7 +1238,6 @@ export default function Overlay() {
               type="button"
               autoFocus
               onClick={() => {
-                passwordNoticeRef.current = false;
                 setPasswordNotice(false);
                 focusInput();
               }}
@@ -1401,6 +1311,22 @@ export default function Overlay() {
             {log.map((entry, index) => {
               const lastAssistant = entry.role === "assistant" && index === log.length - 1;
               const latestUser = index === latestUserIndex;
+              const chrome: TurnChrome | undefined =
+                latestUser || lastAssistant
+                  ? {
+                      clampQuery: latestUser && queryNeedsClamp && !queryExpanded,
+                      queryCap: latestUser ? queryCap : 0,
+                      queryExpanded: latestUser ? queryExpanded : false,
+                      showClamp: latestUser && queryNeedsClamp,
+                      copied: copiedIndex === index,
+                      busy: lastAssistant && busy,
+                      askStatus: lastAssistant ? askStatus : null,
+                      usedVision: lastAssistant && usedVision,
+                      usedSearch: lastAssistant && usedSearch,
+                      usedSearchApi: lastAssistant ? usedSearchApi : "",
+                      searchSources: lastAssistant ? searchSources : EMPTY_SOURCES,
+                    }
+                  : undefined;
               return (
                 <ChatTurn
                   key={`${entry.role}-${index}`}
@@ -1409,17 +1335,7 @@ export default function Overlay() {
                   isLastAssistant={lastAssistant}
                   isFirstUser={index === firstUserIndex}
                   isLatestUser={latestUser}
-                  clampQuery={latestUser && queryNeedsClamp && !queryExpanded}
-                  queryCap={latestUser ? queryCap : 0}
-                  queryExpanded={latestUser ? queryExpanded : false}
-                  showClamp={latestUser && queryNeedsClamp}
-                  copied={copiedIndex === index}
-                  busy={lastAssistant && busy}
-                  askStatus={lastAssistant ? askStatus : null}
-                  usedVision={lastAssistant && usedVision}
-                  usedSearch={lastAssistant && usedSearch}
-                  usedSearchApi={lastAssistant ? usedSearchApi : ""}
-                  searchSources={lastAssistant ? searchSources : EMPTY_SOURCES}
+                  chrome={chrome}
                   latestUserRef={latestUserRef}
                   latestAssistantRef={latestAssistantRef}
                   onOpenPreview={openPreview}
@@ -1466,52 +1382,31 @@ export default function Overlay() {
                 type="button"
                 title="Recapture"
                 onMouseEnter={(event) => {
-                  const src = capture?.dataUrl || currentPreview?.dataUrl;
-                  if (src) {
-                    showShotPop(
-                      Boolean(capture?.dataUrl),
-                      src,
-                      windowLabel || currentPreview?.name || "Current window",
-                      event.currentTarget,
-                    );
+                  if (singleThumb) {
+                    showShotPop(singleThumb.live, singleThumb.src, singleThumb.alt, event.currentTarget);
                   }
                 }}
                 onMouseLeave={hideShotPop}
                 onFocus={(event) => {
-                  const src = capture?.dataUrl || currentPreview?.dataUrl;
-                  if (src) {
-                    showShotPop(
-                      Boolean(capture?.dataUrl),
-                      src,
-                      windowLabel || currentPreview?.name || "Current window",
-                      event.currentTarget,
-                    );
+                  if (singleThumb) {
+                    showShotPop(singleThumb.live, singleThumb.src, singleThumb.alt, event.currentTarget);
                   }
                 }}
                 onBlur={hideShotPop}
                 onClick={() => void refreshCapture()}
               >
-                <span
-                  className={
-                    capturing && (capture?.dataUrl || currentPreview?.dataUrl)
-                      ? "window-tile-shot pending"
-                      : "window-tile-shot"
-                  }
-                >
-                  {capture?.dataUrl ? (
+                <span className={capturing && singleThumb ? "window-tile-shot pending" : "window-tile-shot"}>
+                  {singleThumb ? (
                     <img
-                      src={capture.dataUrl}
-                      alt={windowLabel || "Current window"}
-                      style={quarterSize(capture.width, capture.height)}
-                    />
-                  ) : currentPreview?.dataUrl ? (
-                    <img
-                      src={currentPreview.dataUrl}
-                      alt={currentPreview.name || windowLabel || "Current window"}
-                      style={quarterSize(currentPreview.width, currentPreview.height)}
+                      src={singleThumb.src}
+                      alt={singleThumb.alt}
+                      style={quarterSize(singleThumb.width, singleThumb.height)}
                     />
                   ) : (
-                    <span className="window-tile-placeholder" style={quarterSize(1280, 720)} />
+                    <span
+                      className="window-tile-placeholder"
+                      style={quarterSize(capture?.width || 1280, capture?.height || 720)}
+                    />
                   )}
                 </span>
                 <span className="window-tile-bar" title={windowLabel || currentPreview?.name || undefined}>

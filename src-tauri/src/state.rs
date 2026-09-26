@@ -64,6 +64,15 @@ pub struct Session {
     pub epoch: u64,
 }
 
+impl Session {
+    pub fn clear_chat(&mut self) {
+        self.messages.clear();
+        self.summary.clear();
+        self.total_messages = 0;
+        self.epoch = self.epoch.saturating_add(1);
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChatMessage {
     pub role: String,

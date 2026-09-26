@@ -34,6 +34,12 @@ pub fn list_displays() -> Result<Vec<DisplayInfo>, String> {
 }
 
 fn list_windows_info() -> Result<Vec<DisplayInfo>, String> {
+    list_windows_cached(None)
+}
+
+/// One window enumeration. When `xcap_windows` is already in hand, the list is built from it
+/// instead of calling `Window::all` again.
+fn list_windows_cached(xcap_windows: Option<&[Window]>) -> Result<Vec<DisplayInfo>, String> {
     if let Ok(cache) = window_list_cache().lock() {
         if let Some((at, items)) = cache.as_ref() {
             if at.elapsed() < Duration::from_millis(250) {
@@ -45,12 +51,27 @@ fn list_windows_info() -> Result<Vec<DisplayInfo>, String> {
     let mut out = linux_list_windows();
     #[cfg(not(target_os = "linux"))]
     let mut out = Vec::new();
-    let xcap_list = xcap_list_windows().unwrap_or_default();
+    let xcap_list = match xcap_windows {
+        Some(windows) => xcap_infos(windows),
+        None => xcap_list_windows().unwrap_or_default(),
+    };
     out = merge_window_lists(out, xcap_list);
     if let Ok(mut cache) = window_list_cache().lock() {
         *cache = Some((Instant::now(), out.clone()));
     }
     Ok(out)
+}
+
+fn cached_current_target() -> Option<CurrentTarget> {
+    let cache = window_list_cache().lock().ok()?;
+    let (at, items) = cache.as_ref()?;
+    if at.elapsed() >= Duration::from_millis(250) {
+        return None;
+    }
+    items
+        .iter()
+        .find(|item| item.current)
+        .map(|item| target_from_info(item.clone()))
 }
 
 fn window_list_cache() -> &'static Mutex<Option<(Instant, Vec<DisplayInfo>)>> {
@@ -59,7 +80,11 @@ fn window_list_cache() -> &'static Mutex<Option<(Instant, Vec<DisplayInfo>)>> {
 }
 
 fn xcap_list_windows() -> Result<Vec<DisplayInfo>, String> {
-    let windows = visible_windows()?;
+    Ok(xcap_infos(&Window::all().unwrap_or_default()))
+}
+
+fn xcap_infos(all: &[Window]) -> Vec<DisplayInfo> {
+    let windows = filter_visible(all);
     let current_id = pick_current(&windows).and_then(|window| window.id().ok());
     let mut out: Vec<DisplayInfo> = Vec::new();
     for window in &windows {
@@ -80,7 +105,7 @@ fn xcap_list_windows() -> Result<Vec<DisplayInfo>, String> {
             current: current_id == Some(id),
         });
     }
-    Ok(out)
+    out
 }
 
 fn merge_window_lists(mut primary: Vec<DisplayInfo>, extra: Vec<DisplayInfo>) -> Vec<DisplayInfo> {
@@ -110,6 +135,9 @@ pub struct CurrentTarget {
 }
 
 pub fn peek_active() -> CurrentTarget {
+    if let Some(target) = cached_current_target() {
+        return target;
+    }
     #[cfg(target_os = "linux")]
     {
         match linux_list_windows_inner(true) {
@@ -158,14 +186,19 @@ pub fn current_target() -> CurrentTarget {
     if peeked.id.is_some() {
         return peeked;
     }
-    if let Some(item) = list_windows_info()
-        .ok()
-        .and_then(|list| list.into_iter().find(|item| item.current))
-    {
-        return CurrentTarget {
-            id: Some(item.id).filter(|id| *id != 0),
-            label: item.name,
-        };
+    if let Ok(list) = list_windows_info() {
+        if !list.is_empty() {
+            if let Some(item) = list.into_iter().find(|item| item.current) {
+                return CurrentTarget {
+                    id: Some(item.id).filter(|id| *id != 0),
+                    label: item.name,
+                };
+            }
+            return CurrentTarget {
+                id: None,
+                label: "Primary screen".into(),
+            };
+        }
     }
     let windows = Window::all().unwrap_or_default();
     if let Some(window) = pick_current(&windows) {
@@ -209,47 +242,26 @@ pub fn capture_primary(max_width: u32, redact: bool) -> Result<Capture, String> 
 }
 
 pub fn capture_ids(ids: &[u32], max_width: u32, redact: bool) -> Result<Capture, String> {
-    let mut unique = Vec::new();
-    for id in ids {
-        if !unique.contains(id) {
-            unique.push(*id);
-        }
-    }
-    if unique.is_empty() {
-        return Err("No windows selected".into());
-    }
-    let windows = Window::all().unwrap_or_default();
-    let monitors = Monitor::all().unwrap_or_default();
-    let listed = list_windows_info().unwrap_or_default();
-    let mut tiles = Vec::new();
-    let mut errors = Vec::new();
-    for id in unique {
-        match capture_id(&windows, &monitors, &listed, id) {
-            Ok((shot, image, place)) => tiles.push((image, shot, place)),
-            Err(err) => errors.push(err),
-        }
-    }
+    let (mut tiles, errors) = grab_windows(ids);
     if tiles.is_empty() {
         return Err(format!(
             "Could not capture selected windows ({})",
             errors.join("; ")
         ));
     }
-    let mut blurred = false;
-    if redact {
-        let regions: Vec<_> = tiles.iter().map(|tile| tile.2.region()).collect();
-        let fields = redact::fields_in(&regions);
-        for (image, _, place) in &mut tiles {
-            blurred |= redact::cover(image, *place, &fields);
-        }
-    }
-    let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.1.clone()).collect();
+    let blurred = redact_tiles(&mut tiles, redact);
+    let shots: Vec<WindowShot> = tiles.iter().map(|tile| tile.shot.clone()).collect();
     let mut capture = finish(
-        stitch_layout(tiles.into_iter().map(|(img, _, _)| (0, 0, img)).collect()),
+        stitch_layout(
+            tiles
+                .into_iter()
+                .map(|tile| (0, 0, tile.image))
+                .collect(),
+        ),
         &shots,
         max_width,
     )?;
-    capture.passwords_blurred = blurred;
+    capture.passwords_blurred = blurred.into_iter().any(|hit| hit);
     Ok(capture)
 }
 
@@ -266,43 +278,22 @@ pub struct WindowPreview {
 
 /// Redacted per-window images for the picker. Does not replace the capture that gets sent.
 pub fn preview_windows(ids: &[u32], max_width: u32, redact: bool) -> Vec<WindowPreview> {
-    let mut unique = Vec::new();
-    for id in ids {
-        if !unique.contains(id) {
-            unique.push(*id);
-        }
-    }
-    if unique.is_empty() {
+    let (mut tiles, _) = grab_windows(ids);
+    if tiles.is_empty() {
         return Vec::new();
     }
-    let windows = Window::all().unwrap_or_default();
-    let monitors = Monitor::all().unwrap_or_default();
-    let listed = list_windows_info().unwrap_or_default();
-    let mut tiles = Vec::new();
-    for id in unique {
-        if let Ok((shot, image, place)) = capture_id(&windows, &monitors, &listed, id) {
-            tiles.push((id, shot, image, place));
-        }
-    }
-    let mut blurred = vec![false; tiles.len()];
-    if redact {
-        let regions: Vec<_> = tiles.iter().map(|tile| tile.3.region()).collect();
-        let fields = redact::fields_in(&regions);
-        for (index, (_, _, image, place)) in tiles.iter_mut().enumerate() {
-            blurred[index] = redact::cover(image, *place, &fields);
-        }
-    }
+    let blurred = redact_tiles(&mut tiles, redact);
     let mut out = Vec::new();
-    for (index, (id, shot, image, _)) in tiles.into_iter().enumerate() {
-        let image = downscale(image, max_width);
+    for (index, tile) in tiles.into_iter().enumerate() {
+        let image = downscale(tile.image, max_width);
         let width = image.width();
         let height = image.height();
         let Ok(encoded) = encode_png(image) else {
             continue;
         };
         out.push(WindowPreview {
-            id,
-            name: pretty_label(&shot.app, &shot.title),
+            id: tile.id,
+            name: pretty_label(&tile.shot.app, &tile.shot.title),
             data_url: encoded.to_payload().data_url,
             width,
             height,
@@ -310,6 +301,59 @@ pub fn preview_windows(ids: &[u32], max_width: u32, redact: bool) -> Vec<WindowP
         });
     }
     out
+}
+
+struct Grabbed {
+    id: u32,
+    shot: WindowShot,
+    image: RgbaImage,
+    place: Placement,
+}
+
+fn unique_ids(ids: &[u32]) -> Vec<u32> {
+    let mut unique = Vec::new();
+    for id in ids {
+        if !unique.contains(id) {
+            unique.push(*id);
+        }
+    }
+    unique
+}
+
+fn grab_windows(ids: &[u32]) -> (Vec<Grabbed>, Vec<String>) {
+    let unique = unique_ids(ids);
+    if unique.is_empty() {
+        return (Vec::new(), vec!["No windows selected".into()]);
+    }
+    let windows = Window::all().unwrap_or_default();
+    let monitors = Monitor::all().unwrap_or_default();
+    let listed = list_windows_cached(Some(&windows)).unwrap_or_default();
+    let mut tiles = Vec::new();
+    let mut errors = Vec::new();
+    for id in unique {
+        match capture_id(&windows, &monitors, &listed, id) {
+            Ok((shot, image, place)) => tiles.push(Grabbed {
+                id,
+                shot,
+                image,
+                place,
+            }),
+            Err(err) => errors.push(err),
+        }
+    }
+    (tiles, errors)
+}
+
+fn redact_tiles(tiles: &mut [Grabbed], redact: bool) -> Vec<bool> {
+    let mut blurred = vec![false; tiles.len()];
+    if redact {
+        let regions: Vec<_> = tiles.iter().map(|tile| tile.place.region()).collect();
+        let fields = redact::fields_in(&regions);
+        for (index, tile) in tiles.iter_mut().enumerate() {
+            blurred[index] = redact::cover(&mut tile.image, tile.place, &fields);
+        }
+    }
+    blurred
 }
 
 fn capture_id(
@@ -482,24 +526,24 @@ fn pick_current(windows: &[Window]) -> Option<&Window> {
         .or_else(|| pool.iter().copied().find(|window| !is_ours(window)))
 }
 
-fn visible_windows() -> Result<Vec<Window>, String> {
-    let all = Window::all().unwrap_or_default();
+fn filter_visible(all: &[Window]) -> Vec<Window> {
     let strict: Vec<Window> = all
         .iter()
         .filter(|window| is_usable(window, true))
         .cloned()
         .collect();
     if strict.len() > 1 {
-        return Ok(strict);
+        return strict;
     }
     let loose: Vec<Window> = all
-        .into_iter()
+        .iter()
         .filter(|window| is_usable(window, false))
+        .cloned()
         .collect();
     if loose.len() > strict.len() {
-        return Ok(loose);
+        return loose;
     }
-    Ok(if strict.is_empty() { loose } else { strict })
+    if strict.is_empty() { loose } else { strict }
 }
 
 fn is_usable(window: &Window, strict: bool) -> bool {
@@ -846,16 +890,15 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     let x11 = x11()?;
     let conn = &x11.conn;
 
-    let get_prop = |window: XWindow, property: xcb::x::Atom, r#type: xcb::x::Atom, len: u32| {
-        let cookie = conn.send_request(&GetProperty {
+    let prop = |window: XWindow, property: xcb::x::Atom, r#type: xcb::x::Atom, len: u32| {
+        conn.send_request(&GetProperty {
             delete: false,
             window,
             property,
             r#type,
             long_offset: 0,
             long_length: len,
-        });
-        conn.wait_for_reply(cookie).map_err(|err| err.to_string())
+        })
     };
 
     let client_list = if active_only {
@@ -873,12 +916,23 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     let hidden = x11.hidden;
     let active_atom = x11.active;
 
+    let roots: Vec<_> = conn
+        .get_setup()
+        .roots()
+        .map(|screen| {
+            let root = screen.root();
+            (
+                active_atom.map(|atom| prop(root, atom, ATOM_NONE, 4)),
+                client_list.map(|atom| prop(root, atom, ATOM_NONE, 16_384)),
+            )
+        })
+        .collect();
+
     let mut ids = Vec::new();
     let mut active_id = None;
-    for screen in conn.get_setup().roots() {
-        let root = screen.root();
-        if let Some(atom) = active_atom {
-            if let Ok(reply) = get_prop(root, atom, ATOM_NONE, 4) {
+    for (active_cookie, clients_cookie) in roots {
+        if let Some(cookie) = active_cookie {
+            if let Ok(reply) = conn.wait_for_reply(cookie) {
                 if let Some(&id) = reply.value::<u32>().first() {
                     if id != 0 {
                         active_id = Some(id);
@@ -886,12 +940,11 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
                 }
             }
         }
-        let Some(client_list) = client_list else {
+        let Some(cookie) = clients_cookie else {
             continue;
         };
-        let reply = match get_prop(root, client_list, ATOM_NONE, 16_384) {
-            Ok(reply) => reply,
-            Err(_) => continue,
+        let Ok(reply) = conn.wait_for_reply(cookie) else {
+            continue;
         };
         for &id in reply.value::<u32>() {
             if id != 0 && !ids.contains(&id) {
@@ -901,80 +954,136 @@ fn linux_list_windows_inner(active_only: bool) -> Result<Vec<DisplayInfo>, Strin
     }
 
     if active_only {
-        if let Some(id) = active_id {
-            ids = vec![id];
-        }
+        ids = active_id.into_iter().collect();
     }
 
-    let mut out = Vec::new();
-    for id in ids {
-        let window = XWindow::new(id);
-        let geometry = conn.send_request(&GetGeometry {
-            drawable: Drawable::Window(window),
-        });
-        let Ok(geometry) = conn.wait_for_reply(geometry) else {
-            continue;
-        };
-        let translated = conn.send_request(&TranslateCoordinates {
-            dst_window: geometry.root(),
-            src_window: window,
-            src_x: geometry.x(),
-            src_y: geometry.y(),
-        });
-        let (x, y) = if let Ok(translated) = conn.wait_for_reply(translated) {
+    let geometries: Vec<_> = ids
+        .into_iter()
+        .map(|id| {
+            let window = XWindow::new(id);
             (
-                (translated.dst_x() - geometry.x()) as i32,
-                (translated.dst_y() - geometry.y()) as i32,
+                id,
+                window,
+                conn.send_request(&GetGeometry {
+                    drawable: Drawable::Window(window),
+                }),
             )
-        } else {
-            (geometry.x() as i32, geometry.y() as i32)
+        })
+        .collect();
+
+    struct SizedWindow {
+        id: u32,
+        window: XWindow,
+        fallback_x: i32,
+        fallback_y: i32,
+        width: u32,
+        height: u32,
+    }
+
+    let mut sized = Vec::new();
+    for (id, window, cookie) in geometries {
+        let Ok(geometry) = conn.wait_for_reply(cookie) else {
+            continue;
         };
         let width = geometry.width() as u32;
         let height = geometry.height() as u32;
         if width < 32 || height < 32 {
             continue;
         }
+        sized.push((
+            SizedWindow {
+                id,
+                window,
+                fallback_x: geometry.x() as i32,
+                fallback_y: geometry.y() as i32,
+                width,
+                height,
+            },
+            geometry.root(),
+            geometry.x(),
+            geometry.y(),
+        ));
+    }
 
-        if let (Some(state_atom), Some(hidden_atom)) = (wm_state, hidden) {
-            if let Ok(reply) = get_prop(window, state_atom, ATOM_ATOM, 16) {
+    let details: Vec<_> = sized
+        .into_iter()
+        .map(|(frame, root, src_x, src_y)| {
+            let state = wm_state.map(|atom| prop(frame.window, atom, ATOM_ATOM, 16));
+            let class = prop(frame.window, ATOM_WM_CLASS, ATOM_STRING, 1024);
+            let net_name = match (net_wm_name, utf8) {
+                (Some(name_atom), Some(utf8_atom)) => {
+                    Some(prop(frame.window, name_atom, utf8_atom, 1024))
+                }
+                _ => None,
+            };
+            let wm_name = prop(frame.window, ATOM_WM_NAME, ATOM_STRING, 1024);
+            let translated = conn.send_request(&TranslateCoordinates {
+                dst_window: root,
+                src_window: frame.window,
+                src_x,
+                src_y,
+            });
+            (frame, translated, state, class, net_name, wm_name)
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for (frame, translated, state, class, net_name, wm_name) in details {
+        if let (Some(cookie), Some(hidden_atom)) = (state, hidden) {
+            if let Ok(reply) = conn.wait_for_reply(cookie) {
                 if reply.value::<xcb::x::Atom>().contains(&hidden_atom) {
+                    let _ = conn.wait_for_reply(translated);
+                    let _ = conn.wait_for_reply(class);
+                    if let Some(cookie) = net_name {
+                        let _ = conn.wait_for_reply(cookie);
+                    }
+                    let _ = conn.wait_for_reply(wm_name);
                     continue;
                 }
             }
         }
-
-        let class = get_prop(window, ATOM_WM_CLASS, ATOM_STRING, 1024)
+        let (x, y) = conn
+            .wait_for_reply(translated)
+            .map(|translated| {
+                (
+                    (translated.dst_x() - frame.fallback_x as i16) as i32,
+                    (translated.dst_y() - frame.fallback_y as i16) as i32,
+                )
+            })
+            .unwrap_or((frame.fallback_x, frame.fallback_y));
+        let class = conn
+            .wait_for_reply(class)
             .ok()
             .map(|reply| String::from_utf8_lossy(reply.value()).into_owned())
             .unwrap_or_default();
         let app = class.split('\u{0}').nth(1).unwrap_or("").trim().to_string();
-
         let mut title = String::new();
-        if let (Some(name_atom), Some(utf8_atom)) = (net_wm_name, utf8) {
-            if let Ok(reply) = get_prop(window, name_atom, utf8_atom, 1024) {
+        if let Some(cookie) = net_name {
+            if let Ok(reply) = conn.wait_for_reply(cookie) {
                 title = String::from_utf8_lossy(reply.value()).into_owned();
             }
         }
         if title.trim().is_empty() {
-            if let Ok(reply) = get_prop(window, ATOM_WM_NAME, ATOM_STRING, 1024) {
+            if let Ok(reply) = conn.wait_for_reply(wm_name) {
                 title = String::from_utf8_lossy(reply.value()).into_owned();
             }
+        } else {
+            let _ = conn.wait_for_reply(wm_name);
         }
         title = title.trim().to_string();
-        if linux_is_ours(&app, &title) || linux_is_shell(&app, &title, width, height) {
+        if linux_is_ours(&app, &title) || linux_is_shell(&app, &title, frame.width, frame.height) {
             continue;
         }
-
-        let current = active_id == Some(id) && !linux_is_ours(&app, &title);
+        let current = active_id == Some(frame.id) && !linux_is_ours(&app, &title);
         out.push(DisplayInfo {
-            id,
+            id: frame.id,
             name: pretty_label(&app, &title),
             app,
             title,
             x,
             y,
-            width,
-            height,
+            width: frame.width,
+            height: frame.height,
             primary: current,
             current,
         });

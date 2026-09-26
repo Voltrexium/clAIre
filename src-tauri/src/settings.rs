@@ -214,7 +214,7 @@ impl Settings {
         };
         self.provider = Provider::Gemini;
         self.custom_api_key = key;
-        self.custom_base_url = "https://generativelanguage.googleapis.com/v1beta/openai".into();
+        self.custom_base_url = compat_base(Provider::Gemini).into();
         self.custom_model = "gemini-2.5-flash".into();
     }
 
@@ -489,6 +489,26 @@ fn upsert_limit(map: &mut HashMap<String, KeyUsage>, key: String, limit: u32) {
             monthly_limit: limit,
             ..KeyUsage::default()
         });
+}
+
+pub fn compat_base(provider: Provider) -> &'static str {
+    let key = match provider {
+        Provider::Gemini => "gemini",
+        Provider::Groq => "groq",
+        Provider::Openrouter => "openrouter",
+        Provider::Mistral => "mistral",
+        Provider::Deepseek => "deepseek",
+        Provider::Xai => "xai",
+        Provider::Together => "together",
+        Provider::Fireworks => "fireworks",
+        _ => return "",
+    };
+    static MAP: OnceLock<HashMap<String, String>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        serde_json::from_str(include_str!("../../src/shared/providerBases.json"))
+            .expect("provider bases")
+    });
+    map.get(key).map(String::as_str).unwrap_or("")
 }
 
 pub fn current_month() -> String {

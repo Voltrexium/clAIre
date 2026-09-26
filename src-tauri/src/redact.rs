@@ -174,7 +174,7 @@ fn platform_fields(regions: &[ScreenRect]) -> Result<Vec<ScreenRect>, String> {
         .iter()
         .map(|rect| (rect.x, rect.y, rect.width, rect.height))
         .collect();
-    Ok(crate::linux_windows::password_field_rects(&raw)?
+    Ok(crate::linux_a11y::password_field_rects(&raw)?
         .into_iter()
         .map(|(x, y, width, height)| ScreenRect {
             x,
